@@ -11,6 +11,7 @@ const connectDB = require('./config/db');
 const User = require('./models/User');
 const Bill = require('./models/Bill');
 const Payment = require('./models/Payment');
+const axios = require('axios');
 
 connectDB();
 
@@ -144,6 +145,34 @@ bot.command('tenants', async (ctx) => {
         handleError(ctx, error);
     }
 });
+// 
+async function initializePayment(email, amount, telegramId) {
+  try {
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email,
+        amount: amount * 100, // convert to kobo
+        metadata: {
+          telegramId
+        },
+        callback_url: `${process.env.BASE_URL}/payment-success`
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return response.data.data.authorization_url;
+
+  } catch (error) {
+    console.error("Payment init error:", error.response?.data || error.message);
+    return null;
+  }
+}
 
 // newbill
 
@@ -200,56 +229,85 @@ bot.command('newbill', async (ctx) => {
 
 bot.command('pay', async (ctx) => {
   try {
-    const telegramId = ctx.from.id;
-
-    const user = await User.findOne({ telegramId });
+    const user = await User.findOne({ telegramId: ctx.from.id });
 
     if (!user) {
       return ctx.reply("❌ You are not registered.");
     }
 
-    const bill = await Bill.findOne({ isActive: true });
+    const activeBill = await Bill.findOne({ isActive: true });
 
-    if (!bill) {
-      return ctx.reply("❌ No active bill found.");
+    if (!activeBill) {
+      return ctx.reply("❌ No active bill.");
     }
 
-    if (bill.paidUsers.includes(user._id)) {
-      return ctx.reply("✅ You have already paid for this bill.");
+    if (activeBill.paidUsers.includes(user.telegramId.toString())) {
+      return ctx.reply("✅ You already paid.");
     }
 
-    bill.paidUsers.push(user._id);
-
-    // If everyone has paid, close bill
-    const totalUsers = await User.countDocuments();
-
-    if (bill.paidUsers.length === totalUsers) {
-      bill.isActive = false;
-      await bill.save();
-
-      return ctx.reply(
-        `🎉 Payment received from ${user.fullName}\n\n` +
-        `✅ All payments completed!\n` +
-        `⚡ Bill is now CLOSED.`
-      );
-    }
-
-    await bill.save();
-
-    ctx.reply(
-      `💰 Payment received from ${user.fullName}\n` +
-      `Progress: ${bill.paidUsers.length}/${totalUsers} paid`
+    const paymentLink = await initializePayment(
+      `${user.username || user.telegramId}@compound.com`,
+      activeBill.splitAmount,
+      user.telegramId
     );
+
+    if (!paymentLink) {
+      return ctx.reply("❌ Could not generate payment link.");
+    }
+
+    await ctx.telegram.sendMessage(
+      ctx.from.id,
+      `💳 Please complete your payment:\n\n${paymentLink}`
+    );
+
+    ctx.reply("📩 Payment link sent to your DM.");
 
   } catch (error) {
     console.error(error);
-    ctx.reply("❌ Error processing payment.");
+    ctx.reply("❌ Something went wrong.");
   }
 });
 /* ------------------ BOT LAUNCH ------------------ */
 
 // bot.launch();
 // console.log("🚀 Bot is running...");
+//express server for webhook and health check
+app.post('/paystack-webhook', express.json(), async (req, res) => {
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+
+  const hash = crypto
+    .createHmac('sha512', secret)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+
+  if (hash !== req.headers['x-paystack-signature']) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  const event = req.body;
+
+  if (event.event === 'charge.success') {
+    const telegramId = event.data.metadata.telegramId;
+
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) return res.sendStatus(200);
+
+    if (!bill.paidUsers.includes(telegramId.toString())) {
+      bill.paidUsers.push(telegramId.toString());
+      await bill.save();
+
+      const user = await User.findOne({ telegramId });
+
+      await bot.telegram.sendMessage(
+        process.env.GROUP_ID,
+        `✅ @${user.username || user.fullName} has successfully paid ₦${bill.splitAmount}`
+      );
+    }
+  }
+
+  res.sendStatus(200);
+});
+
 const express = require("express");
 const bodyParser = require("body-parser");
 
