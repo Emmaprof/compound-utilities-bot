@@ -248,8 +248,32 @@ bot.command('pay', async (ctx) => {
 });
 /* ------------------ BOT LAUNCH ------------------ */
 
-bot.launch();
-console.log("🚀 Bot is running...");
+// bot.launch();
+// console.log("🚀 Bot is running...");
+const express = require("express");
+const bodyParser = require("body-parser");
+
+const app = express();
+
+// Important: raw body needed later for Paystack signature verification
+app.use(bodyParser.json());
+
+// Health check route (Render requirement)
+app.get("/", (req, res) => {
+  res.send("🚀 Compound Utilities Bot is running.");
+});
+
+// Start Express server
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`🌍 Server running on port ${PORT}`);
+});
+
+// Launch Telegram bot
+bot.launch().then(() => {
+  console.log("🤖 Telegram Bot is running...");
+});
 
 /* ------------------ GRACEFUL STOP ------------------ */
 
