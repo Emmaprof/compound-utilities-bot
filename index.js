@@ -259,7 +259,9 @@ bot.command('pay', async (ctx) => {
     );
 
     // Clean group confirmation
-    await ctx.reply("📩 Check your DM for payment button.");
+    await ctx.reply(
+  "🔒 For security, your payment link has been sent privately.\n\nPlease check your messages."
+);
 
   } catch (error) {
     console.error(error);
