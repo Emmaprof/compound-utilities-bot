@@ -14,10 +14,9 @@ const billSchema = new mongoose.Schema({
         required: true
     },
     paidUsers: [
-        {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'User'
-        }
+    {
+    type: String
+    }
     ],
     isActive: {
         type: Boolean,
