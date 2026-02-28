@@ -5,6 +5,7 @@ const express = require("express");
 const crypto = require("crypto");
 const axios = require("axios");
 
+
 const connectDB = require("./config/db");
 const User = require("./models/User");
 const Bill = require("./models/Bill");
@@ -217,73 +218,54 @@ async function initializePayment(
 /* ================================
    PAY COMMAND
 ================================ */
-bot.command("pay", async (ctx) => {
-  try {
-    const telegramId =
-      ctx.from.id.toString();
+const { Markup } = require('telegraf');
 
-    const user = await User.findOne({
-      telegramId,
-    });
+bot.command('pay', async (ctx) => {
+  try {
+    const telegramId = ctx.from.id.toString();
+    const user = await User.findOne({ telegramId });
 
     if (!user) {
-      return ctx.reply(
-        "❌ You are not registered."
-      );
+      return ctx.reply("❌ You are not registered.");
     }
 
-    const activeBill = await Bill.findOne({
-      isActive: true,
-    });
+    const activeBill = await Bill.findOne({ isActive: true });
 
     if (!activeBill) {
-      return ctx.reply(
-        "❌ No active bill."
-      );
+      return ctx.reply("❌ No active bill.");
     }
 
-    if (
-      activeBill.paidUsers.includes(
-        telegramId
-      )
-    ) {
-      return ctx.reply(
-        "✅ You already paid."
-      );
+    if (activeBill.paidUsers.includes(telegramId)) {
+      return ctx.reply("✅ You already paid.");
     }
 
-    const paymentLink =
-      await initializePayment(
-        `${telegramId}@compound.com`,
-        activeBill.splitAmount,
-        telegramId
-      );
+    const paymentLink = await initializePayment(
+      `${user.username || telegramId}@compound.com`,
+      activeBill.splitAmount,
+      telegramId
+    );
 
     if (!paymentLink) {
-      return ctx.reply(
-        "❌ Could not generate payment link."
-      );
+      return ctx.reply("❌ Could not generate payment link.");
     }
 
-    try {
-      await ctx.telegram.sendMessage(
-        ctx.from.id,
-        `💳 Please complete your payment:\n\n${paymentLink}`
-      );
+    // Send button privately
+    await ctx.telegram.sendMessage(
+      telegramId,
+      `💳 Electricity Bill Payment\n\nAmount: ₦${activeBill.splitAmount}\n\nClick below to pay securely:`,
+      Markup.inlineKeyboard([
+        [Markup.button.url("💰 Pay Now", paymentLink)]
+      ])
+    );
 
-      await ctx.reply(
-        "📩 Payment link sent to your DM."
-      );
-    } catch {
-      ctx.reply(
-        "⚠ Please start the bot in private chat first, then try again."
-      );
-    }
+    // Clean group confirmation
+    await ctx.reply("📩 Check your DM for payment button.");
+
   } catch (error) {
-    handleError(ctx, error);
+    console.error(error);
+    ctx.reply("❌ Something went wrong.");
   }
 });
-
 /* ================================
    PAYSTACK WEBHOOK
 ================================ */
