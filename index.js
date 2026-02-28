@@ -124,27 +124,40 @@ bot.command("register", async (ctx) => {
 bot.command("newbill", async (ctx) => {
   try {
     if (!isAdmin(ctx)) {
-      return ctx.reply(
-        "❌ Only ADMIN can create bills."
-      );
+      return ctx.reply("❌ Only ADMIN can create bills.");
     }
 
     const parts = ctx.message.text.split(" ");
+
     const amount = parseFloat(parts[1]);
+    const customCount = parts[2] ? parseInt(parts[2]) : null;
 
     if (!amount || amount <= 0) {
-      return ctx.reply(
-        "❌ Usage: /newbill 120000"
-      );
+      return ctx.reply("❌ Usage: /newbill 120000 10");
     }
 
-    const users = await User.find();
-    const totalPeople = users.length;
+    const totalRegisteredUsers = await User.countDocuments();
 
-    if (totalPeople === 0) {
-      return ctx.reply(
-        "❌ No registered users found."
-      );
+    if (totalRegisteredUsers === 0) {
+      return ctx.reply("❌ No registered users found.");
+    }
+
+    let totalPeople;
+
+    if (customCount) {
+      if (customCount <= 0) {
+        return ctx.reply("❌ Number of tenants must be greater than 0.");
+      }
+
+      if (customCount > totalRegisteredUsers) {
+        return ctx.reply(
+          `❌ You only have ${totalRegisteredUsers} registered users.`
+        );
+      }
+
+      totalPeople = customCount;
+    } else {
+      totalPeople = totalRegisteredUsers;
     }
 
     const splitAmount = amount / totalPeople;
@@ -152,14 +165,13 @@ bot.command("newbill", async (ctx) => {
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 7);
 
-    await Bill.updateMany(
-      { isActive: true },
-      { isActive: false }
-    );
+    // Close any previous active bill
+    await Bill.updateMany({ isActive: true }, { isActive: false });
 
     await Bill.create({
       totalAmount: amount,
       splitAmount,
+      totalPeople,
       dueDate,
       paidUsers: [],
       isActive: true,
@@ -168,10 +180,8 @@ bot.command("newbill", async (ctx) => {
     ctx.reply(
       `⚡ New Electricity Bill Created!\n\n` +
         `Total Amount: ₦${amount}\n` +
-        `Total People: ${totalPeople}\n` +
-        `Per Person: ₦${splitAmount.toFixed(
-          2
-        )}\n` +
+        `People Sharing: ${totalPeople}\n` +
+        `Per Person: ₦${splitAmount.toFixed(2)}\n` +
         `Due Date: ${dueDate.toDateString()}\n\n` +
         `Please make your payment before due date.`
     );
@@ -321,8 +331,8 @@ app.post(
           );
           await bill.save();
 
-          const totalUsers =
-            await User.countDocuments();
+          const totalUsers = 
+          bill.totalPeople;
 
           const user =
             await User.findOne({

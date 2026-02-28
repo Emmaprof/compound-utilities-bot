@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const billSchema = new mongoose.Schema({
+    totalPeople: {
+    type: Number,
+    required: true
+    },
     totalAmount: {
         type: Number,
         required: true
