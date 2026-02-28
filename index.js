@@ -273,10 +273,17 @@ bot.command('pay', async (ctx) => {
   "🔒 For security, your payment link has been sent privately.\n\nPlease check your messages."
 );
 
-  } catch (error) {
-    console.error(error);
-    ctx.reply("❌ Something went wrong.");
+ } catch (error) {
+  console.error(error);
+
+  if (error.response?.error_code === 403) {
+    return ctx.reply(
+      "⚠ Please open the bot in private chat and press START first, then try /pay again."
+    );
   }
+
+  ctx.reply("❌ Something went wrong.");
+}
 });
 /* ================================
    PAYSTACK WEBHOOK
