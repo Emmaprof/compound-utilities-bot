@@ -230,25 +230,28 @@ async function initializePayment(
 ================================ */
 const { Markup } = require('telegraf');
 
-bot.command('pay', async (ctx) => {
+bot.command("pay", async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
-    const user = await User.findOne({ telegramId });
 
+    // 1️⃣ Ensure user exists
+    const user = await User.findOne({ telegramId });
     if (!user) {
       return ctx.reply("❌ You are not registered.");
     }
 
+    // 2️⃣ Ensure active bill exists
     const activeBill = await Bill.findOne({ isActive: true });
-
     if (!activeBill) {
-      return ctx.reply("❌ No active bill.");
+      return ctx.reply("❌ No active bill at the moment.");
     }
 
+    // 3️⃣ Prevent double payment
     if (activeBill.paidUsers.includes(telegramId)) {
-      return ctx.reply("✅ You already paid.");
+      return ctx.reply("✅ You have already paid for this bill.");
     }
 
+    // 4️⃣ Generate payment link
     const paymentLink = await initializePayment(
       `${user.username || telegramId}@compound.com`,
       activeBill.splitAmount,
@@ -256,34 +259,44 @@ bot.command('pay', async (ctx) => {
     );
 
     if (!paymentLink) {
-      return ctx.reply("❌ Could not generate payment link.");
+      return ctx.reply("❌ Unable to generate payment link. Please try again.");
     }
 
-    // Send button privately
-    await ctx.telegram.sendMessage(
-      telegramId,
-      `💳 Electricity Bill Payment\n\nAmount: ₦${activeBill.splitAmount}\n\nClick below to pay securely:`,
-      Markup.inlineKeyboard([
-        [Markup.button.url("💰 Pay Now", paymentLink)]
-      ])
-    );
+    // 5️⃣ Try sending DM
+    try {
+      await ctx.telegram.sendMessage(
+        telegramId,
+        `💳 Electricity Bill Payment\n\nAmount: ₦${activeBill.splitAmount}\n\nClick below to pay securely:`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "💰 Pay Now", url: paymentLink }]
+            ]
+          }
+        }
+      );
 
-    // Clean group confirmation
-    await ctx.reply(
-  "🔒 For security, your payment link has been sent privately.\n\nPlease check your messages."
-);
+      // 6️⃣ Confirm in group
+      return ctx.reply(
+        "🔒 For security, your payment link has been sent privately.\n\nPlease check your DM."
+      );
 
- } catch (error) {
-  console.error(error);
+    } catch (dmError) {
 
-  if (error.response?.error_code === 403) {
-    return ctx.reply(
-      "⚠ Please open the bot in private chat and press START first, then try /pay again."
-    );
+      // Telegram blocks DM if user hasn't started bot
+      if (dmError.response?.error_code === 403) {
+        return ctx.reply(
+          "⚠ Please open the bot privately and press START first.\n\nThen come back and type /pay again."
+        );
+      }
+
+      throw dmError; // Unknown error
+    }
+
+  } catch (error) {
+    console.error("PAY COMMAND ERROR:", error);
+    return ctx.reply("❌ Something went wrong. Please try again.");
   }
-
-  ctx.reply("❌ Something went wrong.");
-}
 });
 /* ================================
    PAYSTACK WEBHOOK
