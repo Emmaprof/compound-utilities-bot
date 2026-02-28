@@ -4,6 +4,7 @@ const { Telegraf, Markup } = require("telegraf");
 const express = require("express");
 const crypto = require("crypto");
 const axios = require("axios");
+const cron = require("node-cron");
 
 const connectDB = require("./config/db");
 const User = require("./models/User");
@@ -328,6 +329,66 @@ app.post(
     }
   }
 );
+/* ================================
+   AUTO REMINDER SYSTEM
+================================ */
+
+cron.schedule("0 9 * * *", async () => {
+  try {
+    console.log("⏰ Running daily reminder check...");
+
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) return;
+
+    const activeUsers = await User.find({ isActive: true });
+
+    const paidIds = bill.payments.map(p => p.telegramId);
+
+    const unpaidUsers = activeUsers.filter(
+      u => !paidIds.includes(u.telegramId)
+    );
+
+    if (unpaidUsers.length === 0) return;
+
+    const daysLeft = Math.ceil(
+      (bill.dueDate - new Date()) / (1000 * 60 * 60 * 24)
+    );
+
+    if (daysLeft < 0) return;
+
+    /* =====================
+       GROUP REMINDER
+    ===================== */
+
+    await bot.telegram.sendMessage(
+      process.env.GROUP_ID,
+      `⏰ *Electricity Bill Reminder*\n\n` +
+      `💰 ₦${bill.splitAmount.toFixed(2)} per person\n` +
+      `📅 Due in ${daysLeft} day(s)\n\n` +
+      `⚠ ${unpaidUsers.length} tenant(s) still unpaid.\n\n` +
+      `Use /pay to complete payment.`,
+      { parse_mode: "Markdown" }
+    );
+
+    /* =====================
+       PRIVATE REMINDERS
+    ===================== */
+
+    for (const user of unpaidUsers) {
+      try {
+        await bot.telegram.sendMessage(
+          user.telegramId,
+          `⏰ Reminder: Electricity bill of ₦${bill.splitAmount.toFixed(2)} is due in ${daysLeft} day(s).\n\nPlease use /pay to complete payment.`
+        );
+      } catch (err) {
+        console.log("DM blocked for", user.telegramId);
+      }
+    }
+
+  } catch (error) {
+    console.error("Reminder error:", error);
+  }
+});
 
 /* ================================
    ACTIVATE / DEACTIVATE
