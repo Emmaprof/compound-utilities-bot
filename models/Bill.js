@@ -1,31 +1,32 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const billSchema = new mongoose.Schema({
-    totalPeople: {
-    type: Number,
-    required: true
-    },
-    totalAmount: {
-        type: Number,
-        required: true
-    },
-    splitAmount: {
-        type: Number,
-        required: true
-    },
-    dueDate: {
-        type: Date,
-        required: true
-    },
-    paidUsers: [
-    {
-    type: String
-    }
-    ],
+const paymentSchema = new mongoose.Schema({
+  telegramId: {
+    type: String,
+    required: true,
+  },
+  fullName: String,
+  amount: Number,
+  reference: String,
+  paidAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+const billSchema = new mongoose.Schema(
+  {
+    totalAmount: Number,
+    splitAmount: Number,
+    totalPeople: Number,
+    dueDate: Date,
     isActive: {
-        type: Boolean,
-        default: true
-    }
-}, { timestamps: true });
+      type: Boolean,
+      default: true,
+    },
+    payments: [paymentSchema], // 🔥 NEW STRUCTURE
+  },
+  { timestamps: true }
+);
 
-module.exports = mongoose.model('Bill', billSchema);
+module.exports = mongoose.model("Bill", billSchema);

@@ -247,8 +247,12 @@ bot.command("pay", async (ctx) => {
     }
 
     // 3️⃣ Prevent double payment
-    if (activeBill.paidUsers.includes(telegramId)) {
-      return ctx.reply("✅ You have already paid for this bill.");
+    const alreadyPaid = activeBill.payments.find(
+    (p) => p.telegramId === telegramId
+    );
+
+    if (alreadyPaid) {
+      return ctx.reply("✅ You already paid.");
     }
 
     // 4️⃣ Generate payment link
@@ -327,58 +331,52 @@ app.post(
         req.body.toString()
       );
 
-      if (
-        event.event === "charge.success"
-      ) {
-        const telegramId =
-          event.data.metadata.telegramId.toString();
+      if (event.event === "charge.success") {
+  const telegramId =
+    event.data.metadata.telegramId.toString();
 
-        const bill =
-          await Bill.findOne({
-            isActive: true,
-          });
+  const reference = event.data.reference;
+  const amountPaid = event.data.amount / 100;
 
-        if (!bill)
-          return res.sendStatus(200);
+  const bill = await Bill.findOne({ isActive: true });
 
-        if (
-          !bill.paidUsers.includes(
-            telegramId
-          )
-        ) {
-          bill.paidUsers.push(
-            telegramId
-          );
-          await bill.save();
+  if (!bill) return res.sendStatus(200);
 
-          const totalUsers = 
-          bill.totalPeople;
+  const alreadyPaid = bill.payments.find(
+    (p) => p.telegramId === telegramId
+  );
 
-          const user =
-            await User.findOne({
-              telegramId,
-            });
+  if (alreadyPaid) return res.sendStatus(200);
 
-          await bot.telegram.sendMessage(
-            process.env.GROUP_ID,
-            `🎉 Payment received from ${user.fullName}\n\nProgress: ${bill.paidUsers.length}/${totalUsers} paid`
-          );
+  const user = await User.findOne({ telegramId });
 
-          if (
-            bill.paidUsers.length ===
-            totalUsers
-          ) {
-            bill.isActive = false;
-            await bill.save();
+  bill.payments.push({
+    telegramId,
+    fullName: user?.fullName || "Tenant",
+    amount: amountPaid,
+    reference,
+  });
 
-            await bot.telegram.sendMessage(
-              process.env.GROUP_ID,
-              `\n✅ All payments completed!\n⚡ Bill is now CLOSED.`
-            );
-          }
-        }
-      }
+  await bill.save();
 
+  const totalRequired = bill.totalPeople;
+  const paidCount = bill.payments.length;
+
+  await bot.telegram.sendMessage(
+    process.env.GROUP_ID,
+    `🎉 Payment received from ${user.fullName}\n\nProgress: ${paidCount}/${totalRequired} paid`
+  );
+
+  if (paidCount === totalRequired) {
+    bill.isActive = false;
+    await bill.save();
+
+    await bot.telegram.sendMessage(
+      process.env.GROUP_ID,
+      `\n✅ All payments completed!\n⚡ Bill is now CLOSED.`
+    );
+  }
+}
       res.sendStatus(200);
     } catch (error) {
       console.error(
