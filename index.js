@@ -192,6 +192,69 @@ bot.command("newbill", async (ctx) => {
 });
 
 /* ================================
+    VIEW BILL STATUS
+================================ */
+
+bot.command("bill", async (ctx) => {
+  try {
+    const activeBill = await Bill.findOne({ isActive: true });
+
+    if (!activeBill) {
+      return ctx.reply("📭 No active bill at the moment.");
+    }
+
+    const totalRequired = activeBill.totalPeople;
+    const paidCount = activeBill.payments.length;
+    const remaining = totalRequired - paidCount;
+
+    // Get all registered users
+    const users = await User.find();
+
+    const paidIds = activeBill.payments.map(p => p.telegramId);
+
+    const paidUsers = users.filter(u =>
+      paidIds.includes(u.telegramId)
+    );
+
+    const unpaidUsers = users
+      .filter(u => !paidIds.includes(u.telegramId))
+      .slice(0, remaining); // respect totalPeople limit
+
+    let message =
+      `⚡ *Active Electricity Bill*\n\n` +
+      `💰 Total Amount: ₦${activeBill.totalAmount}\n` +
+      `👥 People Sharing: ${totalRequired}\n` +
+      `💵 Per Person: ₦${activeBill.splitAmount.toFixed(2)}\n` +
+      `📅 Due Date: ${activeBill.dueDate.toDateString()}\n\n` +
+      `📊 Progress: ${paidCount}/${totalRequired} paid\n\n`;
+
+    message += `✅ Paid:\n`;
+    if (paidUsers.length === 0) {
+      message += `- No payments yet\n`;
+    } else {
+      paidUsers.forEach(u => {
+        message += `- ${u.fullName}\n`;
+      });
+    }
+
+    message += `\n⏳ Pending:\n`;
+    if (unpaidUsers.length === 0) {
+      message += `- None\n`;
+    } else {
+      unpaidUsers.forEach(u => {
+        message += `- ${u.fullName}\n`;
+      });
+    }
+
+    ctx.reply(message, { parse_mode: "Markdown" });
+
+  } catch (error) {
+    console.error(error);
+    ctx.reply("❌ Could not fetch bill details.");
+  }
+});
+
+/* ================================
    INITIALIZE PAYSTACK PAYMENT
 ================================ */
 async function initializePayment(
