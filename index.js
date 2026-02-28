@@ -24,13 +24,15 @@ const app = express();
 const isAdmin = (ctx) =>
   ctx.from.id.toString() === process.env.ADMIN_ID;
 
-const safeReply = (ctx, message, options = {}) => {
+const safeReply = async (ctx, message, options = {}) => {
   try {
-    return ctx.reply(message, options);
+    return await ctx.reply(message, options);
   } catch (err) {
-    console.error("Reply error:", err);
+    console.error("Reply error:", err.message);
   }
 };
+
+const getActiveBill = () => Bill.findOne({ isActive: true });
 
 /* ================================
    START COMMAND
@@ -46,25 +48,19 @@ bot.start(async (ctx) => {
         telegramId,
         username: ctx.from.username || "",
         fullName: `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim(),
-        role:
-          telegramId === process.env.ADMIN_ID
-            ? "ADMIN"
-            : "TENANT",
+        role: telegramId === process.env.ADMIN_ID ? "ADMIN" : "TENANT",
         isActive: true,
       });
 
-      return safeReply(
-        ctx,
-        `✅ Registered successfully as ${user.role}`
-      );
+      return safeReply(ctx, `✅ Registered as ${user.role}`);
     }
 
     return safeReply(
       ctx,
-      `👋 Welcome back, ${user.fullName}\nRole: ${user.role}`
+      `👋 Welcome back ${user.fullName}\nRole: ${user.role}`
     );
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     safeReply(ctx, "❌ Registration error.");
   }
 });
@@ -75,7 +71,7 @@ bot.start(async (ctx) => {
 bot.command("newbill", async (ctx) => {
   try {
     if (!isAdmin(ctx))
-      return safeReply(ctx, "❌ Only ADMIN can create bills.");
+      return safeReply(ctx, "❌ Admin only.");
 
     const parts = ctx.message.text.split(" ");
     const amount = parseFloat(parts[1]);
@@ -84,12 +80,10 @@ bot.command("newbill", async (ctx) => {
       return safeReply(ctx, "❌ Usage: /newbill 120000");
 
     const activeUsers = await User.find({ isActive: true });
-    const totalPeople = activeUsers.length;
+    if (activeUsers.length === 0)
+      return safeReply(ctx, "❌ No active tenants.");
 
-    if (totalPeople === 0)
-      return safeReply(ctx, "❌ No active tenants found.");
-
-    const splitAmount = amount / totalPeople;
+    const splitAmount = amount / activeUsers.length;
 
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 7);
@@ -99,75 +93,22 @@ bot.command("newbill", async (ctx) => {
     await Bill.create({
       totalAmount: amount,
       splitAmount,
-      totalPeople,
+      totalPeople: activeUsers.length,
       dueDate,
       payments: [],
       isActive: true,
+      lateFeeApplied: false,
+      cycleMonth: dueDate.toLocaleString("default", { month: "long" })
     });
 
-    return safeReply(
+    safeReply(
       ctx,
-      `⚡ *New Electricity Bill Created*\n\n` +
-        `💰 Total: ₦${amount}\n` +
-        `👥 Active Tenants: ${totalPeople}\n` +
-        `💵 Per Person: ₦${splitAmount.toFixed(2)}\n` +
-        `📅 Due: ${dueDate.toDateString()}`,
+      `⚡ *New Bill Created*\n\n💰 ₦${amount}\n👥 ${activeUsers.length} tenants\n💵 ₦${splitAmount.toFixed(2)} each\n📅 Due ${dueDate.toDateString()}`,
       { parse_mode: "Markdown" }
     );
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     safeReply(ctx, "❌ Error creating bill.");
-  }
-});
-
-/* ================================
-   VIEW BILL
-================================ */
-bot.command("bill", async (ctx) => {
-  try {
-    const bill = await Bill.findOne({ isActive: true });
-
-    if (!bill)
-      return safeReply(ctx, "📭 No active bill.");
-
-    const activeUsers = await User.find({ isActive: true });
-
-    const paidIds = bill.payments.map((p) => p.telegramId);
-
-    const paidUsers = activeUsers.filter((u) =>
-      paidIds.includes(u.telegramId)
-    );
-
-    const unpaidUsers = activeUsers.filter(
-      (u) => !paidIds.includes(u.telegramId)
-    );
-
-    let message =
-      `⚡ *Active Electricity Bill*\n\n` +
-      `💰 Total: ₦${bill.totalAmount}\n` +
-      `👥 Tenants: ${bill.totalPeople}\n` +
-      `💵 Per Person: ₦${bill.splitAmount.toFixed(2)}\n` +
-      `📅 Due: ${bill.dueDate.toDateString()}\n\n` +
-      `📊 Progress: ${paidUsers.length}/${bill.totalPeople}\n\n`;
-
-    message += `✅ *Paid*\n`;
-    message +=
-      paidUsers.length === 0
-        ? "- None\n"
-        : paidUsers.map((u) => `- ${u.fullName}`).join("\n");
-
-    message += `\n\n⏳ *Pending*\n`;
-    message +=
-      unpaidUsers.length === 0
-        ? "- None"
-        : unpaidUsers.map((u) => `- ${u.fullName}`).join("\n");
-
-    return safeReply(ctx, message, {
-      parse_mode: "Markdown",
-    });
-  } catch (error) {
-    console.error(error);
-    safeReply(ctx, "❌ Could not fetch bill.");
   }
 });
 
@@ -203,61 +144,47 @@ async function initializePayment(email, amount, telegramId) {
 bot.command("pay", async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
-
     const user = await User.findOne({ telegramId });
+
     if (!user)
-      return safeReply(ctx, "❌ You are not registered.");
+      return safeReply(ctx, "❌ Not registered.");
 
     if (!user.isActive)
-      return safeReply(
-        ctx,
-        "🚫 You are not active for this billing cycle."
-      );
+      return safeReply(ctx, "🚫 You are inactive this cycle.");
 
-    const bill = await Bill.findOne({ isActive: true });
+    const bill = await getActiveBill();
     if (!bill)
       return safeReply(ctx, "❌ No active bill.");
 
-    const alreadyPaid = bill.payments.find(
-      (p) => p.telegramId === telegramId
-    );
+    if (bill.payments.find(p => p.telegramId === telegramId))
+      return safeReply(ctx, "✅ Already paid.");
 
-    if (alreadyPaid)
-      return safeReply(ctx, "✅ You already paid.");
-
-    const paymentLink = await initializePayment(
-      `${user.username || telegramId}@compound.com`,
+    const link = await initializePayment(
+      `${telegramId}@compound.com`,
       bill.splitAmount,
       telegramId
     );
 
-    if (!paymentLink)
-      return safeReply(ctx, "❌ Payment initialization failed.");
+    if (!link)
+      return safeReply(ctx, "❌ Payment failed.");
 
     try {
       await ctx.telegram.sendMessage(
         telegramId,
-        `💳 Electricity Bill Payment\n\nAmount: ₦${bill.splitAmount}\n\nClick below to pay securely:`,
+        `💳 Electricity Bill\n\nAmount: ₦${bill.splitAmount.toFixed(2)}`,
         Markup.inlineKeyboard([
-          Markup.button.url("💰 Pay Now", paymentLink),
+          Markup.button.url("💰 Pay Now", link),
         ])
       );
 
-      return safeReply(
-        ctx,
-        "🔒 Payment link sent privately. Check your DM."
-      );
-    } catch (dmError) {
-      if (dmError.response?.error_code === 403) {
-        return safeReply(
-          ctx,
-          "⚠ Open the bot privately and press START first."
-        );
-      }
-      throw dmError;
+      safeReply(ctx, "🔒 Payment link sent privately.");
+    } catch (err) {
+      if (err.response?.error_code === 403)
+        return safeReply(ctx, "⚠ Open bot privately and press START.");
+      throw err;
     }
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     safeReply(ctx, "❌ Payment error.");
   }
 });
@@ -265,8 +192,7 @@ bot.command("pay", async (ctx) => {
 /* ================================
    PAYSTACK WEBHOOK
 ================================ */
-app.post(
-  "/paystack-webhook",
+app.post("/paystack-webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
     try {
@@ -281,17 +207,12 @@ app.post(
       const event = JSON.parse(req.body.toString());
 
       if (event.event === "charge.success") {
-        const telegramId =
-          event.data.metadata.telegramId.toString();
-
-        const bill = await Bill.findOne({ isActive: true });
+        const telegramId = event.data.metadata.telegramId.toString();
+        const bill = await getActiveBill();
         if (!bill) return res.sendStatus(200);
 
-        const alreadyPaid = bill.payments.find(
-          (p) => p.telegramId === telegramId
-        );
-
-        if (alreadyPaid) return res.sendStatus(200);
+        if (bill.payments.find(p => p.telegramId === telegramId))
+          return res.sendStatus(200);
 
         const user = await User.findOne({ telegramId });
 
@@ -308,7 +229,7 @@ app.post(
 
         await bot.telegram.sendMessage(
           process.env.GROUP_ID,
-          `🎉 Payment received from ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
+          `🎉 Payment from ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
         );
 
         if (paidCount === bill.totalPeople) {
@@ -317,127 +238,96 @@ app.post(
 
           await bot.telegram.sendMessage(
             process.env.GROUP_ID,
-            `✅ All payments completed!\n⚡ Bill CLOSED.`
+            `✅ Bill CLOSED.`
           );
         }
       }
 
       res.sendStatus(200);
-    } catch (error) {
-      console.error("Webhook error:", error);
+    } catch (err) {
+      console.error("Webhook error:", err);
       res.sendStatus(500);
     }
   }
 );
-/* ================================
-   AUTO REMINDER SYSTEM
-================================ */
 
+/* ================================
+   SMART REMINDER SYSTEM
+================================ */
 cron.schedule("0 9 * * *", async () => {
   try {
-    console.log("⏰ Running daily reminder check...");
-
-    const bill = await Bill.findOne({ isActive: true });
+    const bill = await getActiveBill();
     if (!bill) return;
 
     const activeUsers = await User.find({ isActive: true });
-
     const paidIds = bill.payments.map(p => p.telegramId);
+    const unpaid = activeUsers.filter(u => !paidIds.includes(u.telegramId));
 
-    const unpaidUsers = activeUsers.filter(
-      u => !paidIds.includes(u.telegramId)
-    );
+    if (unpaid.length === 0) return;
 
-    if (unpaidUsers.length === 0) return;
+    const daysLeft = Math.ceil((bill.dueDate - new Date()) / (1000*60*60*24));
 
-    const daysLeft = Math.ceil(
-      (bill.dueDate - new Date()) / (1000 * 60 * 60 * 24)
-    );
-
-    if (daysLeft < 0) return;
-
-    /* =====================
-       GROUP REMINDER
-    ===================== */
+    let urgency = "⏰ Reminder";
+    if (daysLeft === 2) urgency = "🔁 2 Days Left";
+    if (daysLeft === 1) urgency = "🚨 FINAL WARNING";
 
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `⏰ *Electricity Bill Reminder*\n\n` +
-      `💰 ₦${bill.splitAmount.toFixed(2)} per person\n` +
-      `📅 Due in ${daysLeft} day(s)\n\n` +
-      `⚠ ${unpaidUsers.length} tenant(s) still unpaid.\n\n` +
-      `Use /pay to complete payment.`,
-      { parse_mode: "Markdown" }
+      `${urgency}\n💰 ₦${bill.splitAmount.toFixed(2)}\n📅 ${daysLeft} day(s) left\n⚠ ${unpaid.length} unpaid`
     );
 
-    /* =====================
-       PRIVATE REMINDERS
-    ===================== */
-
-    for (const user of unpaidUsers) {
-      try {
-        await bot.telegram.sendMessage(
-          user.telegramId,
-          `⏰ Reminder: Electricity bill of ₦${bill.splitAmount.toFixed(2)} is due in ${daysLeft} day(s).\n\nPlease use /pay to complete payment.`
-        );
-      } catch (err) {
-        console.log("DM blocked for", user.telegramId);
-      }
-    }
-
-  } catch (error) {
-    console.error("Reminder error:", error);
+  } catch (err) {
+    console.error("Reminder error:", err);
   }
 });
 
 /* ================================
-   ACTIVATE / DEACTIVATE
+   AUTO LATE FEE (10%)
 ================================ */
-bot.command("deactivate", async (ctx) => {
-  if (!isAdmin(ctx))
-    return safeReply(ctx, "❌ Admin only.");
+cron.schedule("0 0 * * *", async () => {
+  try {
+    const bill = await getActiveBill();
+    if (!bill) return;
 
-  if (!ctx.message.reply_to_message)
-    return safeReply(ctx, "⚠ Reply to user.");
+    if (new Date() > bill.dueDate && !bill.lateFeeApplied) {
+      bill.splitAmount *= 1.1;
+      bill.lateFeeApplied = true;
+      await bill.save();
 
-  const telegramId =
-    ctx.message.reply_to_message.from.id.toString();
-
-  const user = await User.findOne({ telegramId });
-  if (!user || user.role === "ADMIN")
-    return safeReply(ctx, "❌ Cannot deactivate.");
-
-  user.isActive = false;
-  await user.save();
-
-  safeReply(ctx, `🚫 ${user.fullName} deactivated.`);
-});
-
-bot.command("activate", async (ctx) => {
-  if (!isAdmin(ctx))
-    return safeReply(ctx, "❌ Admin only.");
-
-  if (!ctx.message.reply_to_message)
-    return safeReply(ctx, "⚠ Reply to user.");
-
-  const telegramId =
-    ctx.message.reply_to_message.from.id.toString();
-
-  const user = await User.findOne({ telegramId });
-  if (!user)
-    return safeReply(ctx, "❌ User not found.");
-
-  user.isActive = true;
-  await user.save();
-
-  safeReply(ctx, `✅ ${user.fullName} activated.`);
+      await bot.telegram.sendMessage(
+        process.env.GROUP_ID,
+        `💸 10% Late fee applied.\nNew amount: ₦${bill.splitAmount.toFixed(2)}`
+      );
+    }
+  } catch (err) {
+    console.error("Late fee error:", err);
+  }
 });
 
 /* ================================
-   SERVER START
+   WEEKLY ADMIN REPORT (Sunday 8PM)
+================================ */
+cron.schedule("0 20 * * 0", async () => {
+  try {
+    const bill = await getActiveBill();
+    if (!bill) return;
+
+    const revenue = bill.payments.reduce((s,p)=>s+p.amount,0);
+
+    await bot.telegram.sendMessage(
+      process.env.ADMIN_ID,
+      `📊 Weekly Report\nProgress: ${bill.payments.length}/${bill.totalPeople}\nRevenue: ₦${revenue}`
+    );
+  } catch (err) {
+    console.error("Admin report error:", err);
+  }
+});
+
+/* ================================
+   SERVER
 ================================ */
 app.get("/", (req, res) =>
-  res.send("🚀 Compound Utilities Bot Running")
+  res.send("🚀 Compound Utilities Engine Running")
 );
 
 const PORT = process.env.PORT || 3000;
@@ -450,9 +340,5 @@ bot.launch().then(() =>
   console.log("🤖 Bot running...")
 );
 
-process.once("SIGINT", () =>
-  bot.stop("SIGINT")
-);
-process.once("SIGTERM", () =>
-  bot.stop("SIGTERM")
-);
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
