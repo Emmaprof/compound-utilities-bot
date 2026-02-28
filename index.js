@@ -337,7 +337,7 @@ app.listen(PORT, () =>
 );
 
 bot.launch().then(() =>
-  console.log("🤖 Bot running...")
+  console.log("🤖 Bot running....")
 );
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
