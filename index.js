@@ -1,10 +1,9 @@
 require("dotenv").config();
 
-const { Telegraf } = require("telegraf");
+const { Telegraf, Markup } = require("telegraf");
 const express = require("express");
 const crypto = require("crypto");
 const axios = require("axios");
-
 
 const connectDB = require("./config/db");
 const User = require("./models/User");
@@ -13,13 +12,9 @@ const Bill = require("./models/Bill");
 connectDB();
 
 /* ================================
-   INITIALIZE TELEGRAM BOT
+   INITIALIZE
 ================================ */
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
-/* ================================
-   INITIALIZE EXPRESS APP
-================================ */
 const app = express();
 
 /* ================================
@@ -28,9 +23,12 @@ const app = express();
 const isAdmin = (ctx) =>
   ctx.from.id.toString() === process.env.ADMIN_ID;
 
-const handleError = (ctx, error) => {
-  console.error(error);
-  ctx.reply("❌ Something went wrong. Please try again.");
+const safeReply = (ctx, message, options = {}) => {
+  try {
+    return ctx.reply(message, options);
+  } catch (err) {
+    console.error("Reply error:", err);
+  }
 };
 
 /* ================================
@@ -46,126 +44,55 @@ bot.start(async (ctx) => {
       user = await User.create({
         telegramId,
         username: ctx.from.username || "",
-        fullName: `${ctx.from.first_name || ""} ${
-          ctx.from.last_name || ""
-        }`.trim(),
+        fullName: `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim(),
         role:
           telegramId === process.env.ADMIN_ID
             ? "ADMIN"
             : "TENANT",
+        isActive: true,
       });
 
-      return ctx.reply(
+      return safeReply(
+        ctx,
         `✅ Registered successfully as ${user.role}`
       );
     }
 
-    ctx.reply(
+    return safeReply(
+      ctx,
       `👋 Welcome back, ${user.fullName}\nRole: ${user.role}`
     );
   } catch (error) {
-    handleError(ctx, error);
+    console.error(error);
+    safeReply(ctx, "❌ Registration error.");
   }
 });
 
 /* ================================
-   REGISTER TENANT
-================================ */
-bot.command("register", async (ctx) => {
-  try {
-    if (!isAdmin(ctx)) {
-      return ctx.reply(
-        "❌ Only ADMIN can register tenants."
-      );
-    }
-
-    if (!ctx.message.reply_to_message) {
-      return ctx.reply(
-        "⚠ Reply to the tenant's message with /register"
-      );
-    }
-
-    const mentionedUser =
-      ctx.message.reply_to_message.from;
-
-    const telegramId =
-      mentionedUser.id.toString();
-
-    const existing = await User.findOne({
-      telegramId,
-    });
-
-    if (existing) {
-      return ctx.reply(
-        "⚠ User already registered."
-      );
-    }
-
-    await User.create({
-      telegramId,
-      username: mentionedUser.username || "",
-      fullName: `${mentionedUser.first_name || ""} ${
-        mentionedUser.last_name || ""
-      }`.trim(),
-      role: "TENANT",
-    });
-
-    ctx.reply(
-      `✅ ${mentionedUser.first_name} registered successfully`
-    );
-  } catch (error) {
-    handleError(ctx, error);
-  }
-});
-
-/* ================================
-   NEW BILL
+   NEW BILL (ACTIVE TENANTS ONLY)
 ================================ */
 bot.command("newbill", async (ctx) => {
   try {
-    if (!isAdmin(ctx)) {
-      return ctx.reply("❌ Only ADMIN can create bills.");
-    }
+    if (!isAdmin(ctx))
+      return safeReply(ctx, "❌ Only ADMIN can create bills.");
 
     const parts = ctx.message.text.split(" ");
-
     const amount = parseFloat(parts[1]);
-    const customCount = parts[2] ? parseInt(parts[2]) : null;
 
-    if (!amount || amount <= 0) {
-      return ctx.reply("❌ Usage: /newbill 120000 10");
-    }
+    if (!amount || amount <= 0)
+      return safeReply(ctx, "❌ Usage: /newbill 120000");
 
-    const totalRegisteredUsers = await User.countDocuments();
+    const activeUsers = await User.find({ isActive: true });
+    const totalPeople = activeUsers.length;
 
-    if (totalRegisteredUsers === 0) {
-      return ctx.reply("❌ No registered users found.");
-    }
-
-    let totalPeople;
-
-    if (customCount) {
-      if (customCount <= 0) {
-        return ctx.reply("❌ Number of tenants must be greater than 0.");
-      }
-
-      if (customCount > totalRegisteredUsers) {
-        return ctx.reply(
-          `❌ You only have ${totalRegisteredUsers} registered users.`
-        );
-      }
-
-      totalPeople = customCount;
-    } else {
-      totalPeople = totalRegisteredUsers;
-    }
+    if (totalPeople === 0)
+      return safeReply(ctx, "❌ No active tenants found.");
 
     const splitAmount = amount / totalPeople;
 
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 7);
 
-    // Close any previous active bill
     await Bill.updateMany({ isActive: true }, { isActive: false });
 
     await Bill.create({
@@ -173,117 +100,98 @@ bot.command("newbill", async (ctx) => {
       splitAmount,
       totalPeople,
       dueDate,
-      paidUsers: [],
+      payments: [],
       isActive: true,
     });
 
-    ctx.reply(
-      `⚡ New Electricity Bill Created!\n\n` +
-        `Total Amount: ₦${amount}\n` +
-        `People Sharing: ${totalPeople}\n` +
-        `Per Person: ₦${splitAmount.toFixed(2)}\n` +
-        `Due Date: ${dueDate.toDateString()}\n\n` +
-        `Please make your payment before due date.`
+    return safeReply(
+      ctx,
+      `⚡ *New Electricity Bill Created*\n\n` +
+        `💰 Total: ₦${amount}\n` +
+        `👥 Active Tenants: ${totalPeople}\n` +
+        `💵 Per Person: ₦${splitAmount.toFixed(2)}\n` +
+        `📅 Due: ${dueDate.toDateString()}`,
+      { parse_mode: "Markdown" }
     );
   } catch (error) {
     console.error(error);
-    ctx.reply("❌ Error creating bill.");
+    safeReply(ctx, "❌ Error creating bill.");
   }
 });
 
 /* ================================
-    VIEW BILL STATUS
+   VIEW BILL
 ================================ */
-
 bot.command("bill", async (ctx) => {
   try {
-    const activeBill = await Bill.findOne({ isActive: true });
+    const bill = await Bill.findOne({ isActive: true });
 
-    if (!activeBill) {
-      return ctx.reply("📭 No active bill at the moment.");
-    }
+    if (!bill)
+      return safeReply(ctx, "📭 No active bill.");
 
-    const totalRequired = activeBill.totalPeople;
-    const paidCount = activeBill.payments.length;
-    const remaining = totalRequired - paidCount;
+    const activeUsers = await User.find({ isActive: true });
 
-    // Get all registered users
-    const users = await User.find();
+    const paidIds = bill.payments.map((p) => p.telegramId);
 
-    const paidIds = activeBill.payments.map(p => p.telegramId);
-
-    const paidUsers = users.filter(u =>
+    const paidUsers = activeUsers.filter((u) =>
       paidIds.includes(u.telegramId)
     );
 
-    const unpaidUsers = users
-      .filter(u => !paidIds.includes(u.telegramId))
-      .slice(0, remaining); // respect totalPeople limit
+    const unpaidUsers = activeUsers.filter(
+      (u) => !paidIds.includes(u.telegramId)
+    );
 
     let message =
       `⚡ *Active Electricity Bill*\n\n` +
-      `💰 Total Amount: ₦${activeBill.totalAmount}\n` +
-      `👥 People Sharing: ${totalRequired}\n` +
-      `💵 Per Person: ₦${activeBill.splitAmount.toFixed(2)}\n` +
-      `📅 Due Date: ${activeBill.dueDate.toDateString()}\n\n` +
-      `📊 Progress: ${paidCount}/${totalRequired} paid\n\n`;
+      `💰 Total: ₦${bill.totalAmount}\n` +
+      `👥 Tenants: ${bill.totalPeople}\n` +
+      `💵 Per Person: ₦${bill.splitAmount.toFixed(2)}\n` +
+      `📅 Due: ${bill.dueDate.toDateString()}\n\n` +
+      `📊 Progress: ${paidUsers.length}/${bill.totalPeople}\n\n`;
 
-    message += `✅ Paid:\n`;
-    if (paidUsers.length === 0) {
-      message += `- No payments yet\n`;
-    } else {
-      paidUsers.forEach(u => {
-        message += `- ${u.fullName}\n`;
-      });
-    }
+    message += `✅ *Paid*\n`;
+    message +=
+      paidUsers.length === 0
+        ? "- None\n"
+        : paidUsers.map((u) => `- ${u.fullName}`).join("\n");
 
-    message += `\n⏳ Pending:\n`;
-    if (unpaidUsers.length === 0) {
-      message += `- None\n`;
-    } else {
-      unpaidUsers.forEach(u => {
-        message += `- ${u.fullName}\n`;
-      });
-    }
+    message += `\n\n⏳ *Pending*\n`;
+    message +=
+      unpaidUsers.length === 0
+        ? "- None"
+        : unpaidUsers.map((u) => `- ${u.fullName}`).join("\n");
 
-    ctx.reply(message, { parse_mode: "Markdown" });
-
+    return safeReply(ctx, message, {
+      parse_mode: "Markdown",
+    });
   } catch (error) {
     console.error(error);
-    ctx.reply("❌ Could not fetch bill details.");
+    safeReply(ctx, "❌ Could not fetch bill.");
   }
 });
 
 /* ================================
-   INITIALIZE PAYSTACK PAYMENT
+   INITIALIZE PAYSTACK
 ================================ */
-async function initializePayment(
-  email,
-  amount,
-  telegramId
-) {
+async function initializePayment(email, amount, telegramId) {
   try {
     const response = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
         email,
-        amount: amount * 100,
+        amount: Math.round(amount * 100),
         metadata: { telegramId },
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          "Content-Type": "application/json",
         },
       }
     );
 
     return response.data.data.authorization_url;
   } catch (error) {
-    console.error(
-      "Payment init error:",
-      error.response?.data || error.message
-    );
+    console.error("Payment init error:", error.response?.data || error.message);
     return null;
   }
 }
@@ -291,80 +199,68 @@ async function initializePayment(
 /* ================================
    PAY COMMAND
 ================================ */
-const { Markup } = require('telegraf');
-
 bot.command("pay", async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
 
-    // 1️⃣ Ensure user exists
     const user = await User.findOne({ telegramId });
-    if (!user) {
-      return ctx.reply("❌ You are not registered.");
-    }
+    if (!user)
+      return safeReply(ctx, "❌ You are not registered.");
 
-    // 2️⃣ Ensure active bill exists
-    const activeBill = await Bill.findOne({ isActive: true });
-    if (!activeBill) {
-      return ctx.reply("❌ No active bill at the moment.");
-    }
+    if (!user.isActive)
+      return safeReply(
+        ctx,
+        "🚫 You are not active for this billing cycle."
+      );
 
-    // 3️⃣ Prevent double payment
-    const alreadyPaid = activeBill.payments.find(
-    (p) => p.telegramId === telegramId
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill)
+      return safeReply(ctx, "❌ No active bill.");
+
+    const alreadyPaid = bill.payments.find(
+      (p) => p.telegramId === telegramId
     );
 
-    if (alreadyPaid) {
-      return ctx.reply("✅ You already paid.");
-    }
+    if (alreadyPaid)
+      return safeReply(ctx, "✅ You already paid.");
 
-    // 4️⃣ Generate payment link
     const paymentLink = await initializePayment(
       `${user.username || telegramId}@compound.com`,
-      activeBill.splitAmount,
+      bill.splitAmount,
       telegramId
     );
 
-    if (!paymentLink) {
-      return ctx.reply("❌ Unable to generate payment link. Please try again.");
-    }
+    if (!paymentLink)
+      return safeReply(ctx, "❌ Payment initialization failed.");
 
-    // 5️⃣ Try sending DM
     try {
       await ctx.telegram.sendMessage(
         telegramId,
-        `💳 Electricity Bill Payment\n\nAmount: ₦${activeBill.splitAmount}\n\nClick below to pay securely:`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "💰 Pay Now", url: paymentLink }]
-            ]
-          }
-        }
+        `💳 Electricity Bill Payment\n\nAmount: ₦${bill.splitAmount}\n\nClick below to pay securely:`,
+        Markup.inlineKeyboard([
+          Markup.button.url("💰 Pay Now", paymentLink),
+        ])
       );
 
-      // 6️⃣ Confirm in group
-      return ctx.reply(
-        "🔒 For security, your payment link has been sent privately.\n\nPlease check your DM."
+      return safeReply(
+        ctx,
+        "🔒 Payment link sent privately. Check your DM."
       );
-
     } catch (dmError) {
-
-      // Telegram blocks DM if user hasn't started bot
       if (dmError.response?.error_code === 403) {
-        return ctx.reply(
-          "⚠ Please open the bot privately and press START first.\n\nThen come back and type /pay again."
+        return safeReply(
+          ctx,
+          "⚠ Open the bot privately and press START first."
         );
       }
-
-      throw dmError; // Unknown error
+      throw dmError;
     }
-
   } catch (error) {
-    console.error("PAY COMMAND ERROR:", error);
-    return ctx.reply("❌ Something went wrong. Please try again.");
+    console.error(error);
+    safeReply(ctx, "❌ Payment error.");
   }
 });
+
 /* ================================
    PAYSTACK WEBHOOK
 ================================ */
@@ -373,114 +269,126 @@ app.post(
   express.raw({ type: "application/json" }),
   async (req, res) => {
     try {
-      const secret =
-        process.env.PAYSTACK_SECRET_KEY;
-
       const hash = crypto
-        .createHmac("sha512", secret)
+        .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
         .update(req.body)
         .digest("hex");
 
-      if (
-        hash !==
-        req.headers["x-paystack-signature"]
-      ) {
-        return res
-          .status(401)
-          .send("Unauthorized");
-      }
+      if (hash !== req.headers["x-paystack-signature"])
+        return res.sendStatus(401);
 
-      const event = JSON.parse(
-        req.body.toString()
-      );
+      const event = JSON.parse(req.body.toString());
 
       if (event.event === "charge.success") {
-  const telegramId =
-    event.data.metadata.telegramId.toString();
+        const telegramId =
+          event.data.metadata.telegramId.toString();
 
-  const reference = event.data.reference;
-  const amountPaid = event.data.amount / 100;
+        const bill = await Bill.findOne({ isActive: true });
+        if (!bill) return res.sendStatus(200);
 
-  const bill = await Bill.findOne({ isActive: true });
+        const alreadyPaid = bill.payments.find(
+          (p) => p.telegramId === telegramId
+        );
 
-  if (!bill) return res.sendStatus(200);
+        if (alreadyPaid) return res.sendStatus(200);
 
-  const alreadyPaid = bill.payments.find(
-    (p) => p.telegramId === telegramId
-  );
+        const user = await User.findOne({ telegramId });
 
-  if (alreadyPaid) return res.sendStatus(200);
+        bill.payments.push({
+          telegramId,
+          fullName: user?.fullName || "Tenant",
+          amount: event.data.amount / 100,
+          reference: event.data.reference,
+        });
 
-  const user = await User.findOne({ telegramId });
+        await bill.save();
 
-  bill.payments.push({
-    telegramId,
-    fullName: user?.fullName || "Tenant",
-    amount: amountPaid,
-    reference,
-  });
+        const paidCount = bill.payments.length;
 
-  await bill.save();
+        await bot.telegram.sendMessage(
+          process.env.GROUP_ID,
+          `🎉 Payment received from ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
+        );
 
-  const totalRequired = bill.totalPeople;
-  const paidCount = bill.payments.length;
+        if (paidCount === bill.totalPeople) {
+          bill.isActive = false;
+          await bill.save();
 
-  await bot.telegram.sendMessage(
-    process.env.GROUP_ID,
-    `🎉 Payment received from ${user.fullName}\n\nProgress: ${paidCount}/${totalRequired} paid`
-  );
+          await bot.telegram.sendMessage(
+            process.env.GROUP_ID,
+            `✅ All payments completed!\n⚡ Bill CLOSED.`
+          );
+        }
+      }
 
-  if (paidCount === totalRequired) {
-    bill.isActive = false;
-    await bill.save();
-
-    await bot.telegram.sendMessage(
-      process.env.GROUP_ID,
-      `\n✅ All payments completed!\n⚡ Bill is now CLOSED.`
-    );
-  }
-}
       res.sendStatus(200);
     } catch (error) {
-      console.error(
-        "Webhook error:",
-        error
-      );
+      console.error("Webhook error:", error);
       res.sendStatus(500);
     }
   }
 );
 
 /* ================================
-   HEALTH CHECK
+   ACTIVATE / DEACTIVATE
 ================================ */
-app.get("/", (req, res) => {
-  res.send(
-    "🚀 Compound Utilities Bot is running."
-  );
+bot.command("deactivate", async (ctx) => {
+  if (!isAdmin(ctx))
+    return safeReply(ctx, "❌ Admin only.");
+
+  if (!ctx.message.reply_to_message)
+    return safeReply(ctx, "⚠ Reply to user.");
+
+  const telegramId =
+    ctx.message.reply_to_message.from.id.toString();
+
+  const user = await User.findOne({ telegramId });
+  if (!user || user.role === "ADMIN")
+    return safeReply(ctx, "❌ Cannot deactivate.");
+
+  user.isActive = false;
+  await user.save();
+
+  safeReply(ctx, `🚫 ${user.fullName} deactivated.`);
+});
+
+bot.command("activate", async (ctx) => {
+  if (!isAdmin(ctx))
+    return safeReply(ctx, "❌ Admin only.");
+
+  if (!ctx.message.reply_to_message)
+    return safeReply(ctx, "⚠ Reply to user.");
+
+  const telegramId =
+    ctx.message.reply_to_message.from.id.toString();
+
+  const user = await User.findOne({ telegramId });
+  if (!user)
+    return safeReply(ctx, "❌ User not found.");
+
+  user.isActive = true;
+  await user.save();
+
+  safeReply(ctx, `✅ ${user.fullName} activated.`);
 });
 
 /* ================================
-   START SERVER & BOT
+   SERVER START
 ================================ */
-const PORT =
-  process.env.PORT || 3000;
+app.get("/", (req, res) =>
+  res.send("🚀 Compound Utilities Bot Running")
+);
 
-app.listen(PORT, () => {
-  console.log(
-    `🌍 Server running on port ${PORT}`
-  );
-});
+const PORT = process.env.PORT || 3000;
 
-bot.launch().then(() => {
-  console.log(
-    "🤖 Telegram Bot is running..."
-  );
-});
+app.listen(PORT, () =>
+  console.log(`🌍 Server running on ${PORT}`)
+);
 
-/* ================================
-   GRACEFUL SHUTDOWN
-================================ */
+bot.launch().then(() =>
+  console.log("🤖 Bot running...")
+);
+
 process.once("SIGINT", () =>
   bot.stop("SIGINT")
 );
