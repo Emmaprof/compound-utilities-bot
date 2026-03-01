@@ -12,15 +12,16 @@ const Bill = require("./models/Bill");
 
 connectDB();
 
-/* ================================
+/* =================================
    INITIALIZE
-================================ */
+================================= */
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const app = express();
 
-/* ================================
+/* =================================
    UTILITIES
-================================ */
+================================= */
+
 const isAdmin = (ctx) =>
   ctx.from.id.toString() === process.env.ADMIN_ID;
 
@@ -34,9 +35,12 @@ const safeReply = async (ctx, message, options = {}) => {
 
 const getActiveBill = () => Bill.findOne({ isActive: true });
 
-/* ================================
-   START COMMAND
-================================ */
+const calculateDaysLeft = (dueDate) =>
+  Math.ceil((dueDate - new Date()) / (1000 * 60 * 60 * 24));
+
+/* =================================
+   START
+================================= */
 bot.start(async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
@@ -65,21 +69,21 @@ bot.start(async (ctx) => {
   }
 });
 
-/* ================================
-   NEW BILL (ACTIVE TENANTS ONLY)
-================================ */
+/* =================================
+   NEW BILL
+================================= */
 bot.command("newbill", async (ctx) => {
   try {
     if (!isAdmin(ctx))
       return safeReply(ctx, "❌ Admin only.");
 
-    const parts = ctx.message.text.split(" ");
-    const amount = parseFloat(parts[1]);
+    const amount = parseFloat(ctx.message.text.split(" ")[1]);
 
     if (!amount || amount <= 0)
       return safeReply(ctx, "❌ Usage: /newbill 120000");
 
     const activeUsers = await User.find({ isActive: true });
+
     if (activeUsers.length === 0)
       return safeReply(ctx, "❌ No active tenants.");
 
@@ -98,12 +102,15 @@ bot.command("newbill", async (ctx) => {
       payments: [],
       isActive: true,
       lateFeeApplied: false,
-      cycleMonth: dueDate.toLocaleString("default", { month: "long" })
     });
 
     safeReply(
       ctx,
-      `⚡ *New Bill Created*\n\n💰 ₦${amount}\n👥 ${activeUsers.length} tenants\n💵 ₦${splitAmount.toFixed(2)} each\n📅 Due ${dueDate.toDateString()}`,
+      `⚡ *New Bill Created*\n\n` +
+        `💰 ₦${amount}\n` +
+        `👥 ${activeUsers.length} tenants\n` +
+        `💵 ₦${splitAmount.toFixed(2)} each\n` +
+        `📅 Due ${dueDate.toDateString()}`,
       { parse_mode: "Markdown" }
     );
   } catch (err) {
@@ -112,9 +119,9 @@ bot.command("newbill", async (ctx) => {
   }
 });
 
-/* ================================
-   INITIALIZE PAYSTACK
-================================ */
+/* =================================
+   INITIALIZE PAYSTACK (LIVE READY)
+================================= */
 async function initializePayment(email, amount, telegramId) {
   try {
     const response = await axios.post(
@@ -122,11 +129,14 @@ async function initializePayment(email, amount, telegramId) {
       {
         email,
         amount: Math.round(amount * 100),
+        currency: "NGN",
+        channels: ["card", "bank", "ussd", "bank_transfer"],
         metadata: { telegramId },
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json",
         },
       }
     );
@@ -138,9 +148,9 @@ async function initializePayment(email, amount, telegramId) {
   }
 }
 
-/* ================================
+/* =================================
    PAY COMMAND
-================================ */
+================================= */
 bot.command("pay", async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
@@ -156,7 +166,7 @@ bot.command("pay", async (ctx) => {
     if (!bill)
       return safeReply(ctx, "❌ No active bill.");
 
-    if (bill.payments.find(p => p.telegramId === telegramId))
+    if (bill.payments.find((p) => p.telegramId === telegramId))
       return safeReply(ctx, "✅ Already paid.");
 
     const link = await initializePayment(
@@ -168,31 +178,26 @@ bot.command("pay", async (ctx) => {
     if (!link)
       return safeReply(ctx, "❌ Payment failed.");
 
-    try {
-      await ctx.telegram.sendMessage(
-        telegramId,
-        `💳 Electricity Bill Payment\n\nAmount: ₦${bill.splitAmount.toFixed(2)}\n\nClick below to pay securely:`,
-        Markup.inlineKeyboard([
-          Markup.button.url("💰 Pay Now", link),
-        ])
-      );
+    await ctx.telegram.sendMessage(
+      telegramId,
+      `💳 Electricity Bill\n\nAmount: ₦${bill.splitAmount.toFixed(
+        2
+      )}\n\nChoose payment method below:`,
+      Markup.inlineKeyboard([Markup.button.url("💰 Pay Now", link)])
+    );
 
-      safeReply(ctx, "🔒 For security, your payment link has been sent privately.\n\nPlease check your DM.");
-    } catch (err) {
-      if (err.response?.error_code === 403)
-        return safeReply(ctx, "⚠ Open bot privately and press START.");
-      throw err;
-    }
+    safeReply(ctx, "🔒 Payment link sent privately.");
   } catch (err) {
     console.error(err);
     safeReply(ctx, "❌ Payment error.");
   }
 });
 
-/* ================================
+/* =================================
    PAYSTACK WEBHOOK
-================================ */
-app.post("/paystack-webhook",
+================================= */
+app.post(
+  "/paystack-webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
     try {
@@ -211,15 +216,17 @@ app.post("/paystack-webhook",
         const bill = await getActiveBill();
         if (!bill) return res.sendStatus(200);
 
-        if (bill.payments.find(p => p.telegramId === telegramId))
+        if (bill.payments.find((p) => p.telegramId === telegramId))
           return res.sendStatus(200);
 
         const user = await User.findOne({ telegramId });
 
+        const paidAmount = event.data.amount / 100;
+
         bill.payments.push({
           telegramId,
           fullName: user?.fullName || "Tenant",
-          amount: event.data.amount / 100,
+          amount: paidAmount,
           reference: event.data.reference,
         });
 
@@ -227,9 +234,24 @@ app.post("/paystack-webhook",
 
         const paidCount = bill.payments.length;
 
+        /* RECEIPT DM */
+        try {
+          await bot.telegram.sendMessage(
+            telegramId,
+            `🧾 *Payment Receipt*\n\n` +
+              `👤 ${user.fullName}\n` +
+              `💰 ₦${paidAmount.toFixed(2)}\n` +
+              `🆔 Ref: ${event.data.reference}\n` +
+              `📅 ${new Date().toDateString()}\n\n` +
+              `✅ Confirmed`,
+            { parse_mode: "Markdown" }
+          );
+        } catch {}
+
+        /* GROUP UPDATE */
         await bot.telegram.sendMessage(
           process.env.GROUP_ID,
-          `🎉 Payment from ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
+          `🎉 Payment received from ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
         );
 
         if (paidCount === bill.totalPeople) {
@@ -238,7 +260,7 @@ app.post("/paystack-webhook",
 
           await bot.telegram.sendMessage(
             process.env.GROUP_ID,
-            `✅ Bill CLOSED.`
+            `✅ Bill CLOSED. All payments received.`
           );
         }
       }
@@ -251,39 +273,47 @@ app.post("/paystack-webhook",
   }
 );
 
-/* ================================
+/* =================================
    SMART REMINDER SYSTEM
-================================ */
+================================= */
 cron.schedule("0 9 * * *", async () => {
   try {
     const bill = await getActiveBill();
     if (!bill) return;
 
     const activeUsers = await User.find({ isActive: true });
-    const paidIds = bill.payments.map(p => p.telegramId);
-    const unpaid = activeUsers.filter(u => !paidIds.includes(u.telegramId));
+    const paidIds = bill.payments.map((p) => p.telegramId);
+    const unpaid = activeUsers.filter(
+      (u) => !paidIds.includes(u.telegramId)
+    );
 
     if (unpaid.length === 0) return;
 
-    const daysLeft = Math.ceil((bill.dueDate - new Date()) / (1000*60*60*24));
+    const daysLeft = calculateDaysLeft(bill.dueDate);
 
     let urgency = "⏰ Reminder";
     if (daysLeft === 2) urgency = "🔁 2 Days Left";
     if (daysLeft === 1) urgency = "🚨 FINAL WARNING";
 
+    const mentions = unpaid
+      .map((u) => `[${u.fullName}](tg://user?id=${u.telegramId})`)
+      .join("\n");
+
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `${urgency}\n💰 ₦${bill.splitAmount.toFixed(2)}\n📅 ${daysLeft} day(s) left\n⚠ ${unpaid.length} unpaid`
+      `${urgency}\n\n💰 ₦${bill.splitAmount.toFixed(
+        2
+      )}\n📅 ${daysLeft} day(s) left\n\n⚠ Pending:\n${mentions}`,
+      { parse_mode: "Markdown" }
     );
-
   } catch (err) {
     console.error("Reminder error:", err);
   }
 });
 
-/* ================================
+/* =================================
    AUTO LATE FEE (10%)
-================================ */
+================================= */
 cron.schedule("0 0 * * *", async () => {
   try {
     const bill = await getActiveBill();
@@ -296,7 +326,9 @@ cron.schedule("0 0 * * *", async () => {
 
       await bot.telegram.sendMessage(
         process.env.GROUP_ID,
-        `💸 10% Late fee applied.\nNew amount: ₦${bill.splitAmount.toFixed(2)}`
+        `💸 10% Late fee applied.\nNew amount: ₦${bill.splitAmount.toFixed(
+          2
+        )}`
       );
     }
   } catch (err) {
@@ -304,28 +336,28 @@ cron.schedule("0 0 * * *", async () => {
   }
 });
 
-/* ================================
-   WEEKLY ADMIN REPORT (Sunday 8PM)
-================================ */
+/* =================================
+   WEEKLY ADMIN REPORT
+================================= */
 cron.schedule("0 20 * * 0", async () => {
   try {
     const bill = await getActiveBill();
     if (!bill) return;
 
-    const revenue = bill.payments.reduce((s,p)=>s+p.amount,0);
+    const revenue = bill.payments.reduce((s, p) => s + p.amount, 0);
 
     await bot.telegram.sendMessage(
       process.env.ADMIN_ID,
-      `📊 Weekly Report\nProgress: ${bill.payments.length}/${bill.totalPeople}\nRevenue: ₦${revenue}`
+      `📊 Weekly Report\n\nProgress: ${bill.payments.length}/${bill.totalPeople}\nRevenue: ₦${revenue}`
     );
   } catch (err) {
     console.error("Admin report error:", err);
   }
 });
 
-/* ================================
+/* =================================
    SERVER
-================================ */
+================================= */
 app.get("/", (req, res) =>
   res.send("🚀 Compound Utilities Engine Running")
 );
@@ -337,7 +369,7 @@ app.listen(PORT, () =>
 );
 
 bot.launch().then(() =>
-  console.log("🤖 Bot running....")
+  console.log("🤖 Bot running...")
 );
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
