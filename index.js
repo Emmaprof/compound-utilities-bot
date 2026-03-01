@@ -171,13 +171,13 @@ bot.command("pay", async (ctx) => {
     try {
       await ctx.telegram.sendMessage(
         telegramId,
-        `💳 Electricity Bill\n\nAmount: ₦${bill.splitAmount.toFixed(2)}`,
+        `💳 Electricity Bill Payment\n\nAmount: ₦${bill.splitAmount.toFixed(2)}\n\nClick below to pay securely:`,
         Markup.inlineKeyboard([
           Markup.button.url("💰 Pay Now", link),
         ])
       );
 
-      safeReply(ctx, "🔒 Payment link sent privately.");
+      safeReply(ctx, "🔒 For security, your payment link has been sent privately.\n\nPlease check your DM.");
     } catch (err) {
       if (err.response?.error_code === 403)
         return safeReply(ctx, "⚠ Open bot privately and press START.");
