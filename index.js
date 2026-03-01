@@ -123,49 +123,57 @@ bot.command("newbill", async (ctx) => {
 });
 
 /* =================================
-   MY HISTORY (PRIVATE SAFE)
+   PAYMENT HISTORY (TENANT SAFE)
 ================================= */
-bot.command("myhistory", async (ctx) => {
+bot.command(["history", "myhistory"], async (ctx) => {
   try {
-    if (ctx.chat.type !== "private")
-      return safeReply(ctx, "⚠ Use this command in private chat.");
-
     const telegramId = ctx.from.id.toString();
 
+    const user = await User.findOne({ telegramId });
+    if (!user) {
+      return safeReply(ctx, "❌ You are not registered.");
+    }
+
+    // Only allow in private chat
+    if (ctx.chat.type !== "private") {
+      return safeReply(ctx, "⚠ Please use this command in private chat.");
+    }
+
     const bills = await Bill.find({
-      "payments.telegramId": telegramId,
+      payments: { $elemMatch: { telegramId } }
     }).sort({ createdAt: -1 });
 
-    if (!bills.length)
+    if (!bills.length) {
       return safeReply(ctx, "📭 No payment history found.");
+    }
 
     let totalPaid = 0;
     let message = `📜 *Your Payment History*\n\n`;
 
-    bills.forEach((bill) => {
+    for (const bill of bills) {
       const payment = bill.payments.find(
-        (p) => p.telegramId === telegramId
+        p => p.telegramId === telegramId
       );
 
-      if (!payment) return;
+      if (!payment) continue;
 
       totalPaid += payment.amount;
 
       message +=
         `🗓 ${bill.dueDate.toDateString()}\n` +
-        `💰 ${formatCurrency(payment.amount)}\n` +
+        `💰 ₦${payment.amount.toFixed(2)}\n` +
         `🔗 Ref: ${payment.reference}\n\n`;
-    });
+    }
 
-    message += `💵 *Total Paid:* ${formatCurrency(totalPaid)}`;
+    message += `💵 *Total Paid:* ₦${totalPaid.toFixed(2)}`;
 
-    safeReply(ctx, message, { parse_mode: "Markdown" });
+    return safeReply(ctx, message, { parse_mode: "Markdown" });
+
   } catch (err) {
-    console.error(err);
-    safeReply(ctx, "❌ Could not fetch history.");
+    console.error("History error:", err);
+    return safeReply(ctx, "❌ Could not fetch history.");
   }
 });
-
 /* =================================
    MY BALANCE (LEDGER STYLE)
 ================================= */

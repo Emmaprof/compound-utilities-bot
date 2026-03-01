@@ -24,6 +24,7 @@ const billSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    lateFeeApplied:Boolean,
     payments: [paymentSchema], // 🔥 NEW STRUCTURE
   },
   { timestamps: true }
