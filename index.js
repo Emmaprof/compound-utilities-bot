@@ -119,6 +119,147 @@ bot.command("newbill", async (ctx) => {
   }
 });
 
+/* ================================
+   TENANT PAYMENT HISTORY
+================================ */
+bot.command("history", async (ctx) => {
+  try {
+    const telegramId = ctx.from.id.toString();
+
+    const user = await User.findOne({ telegramId });
+    if (!user) return safeReply(ctx, "❌ You are not registered.");
+
+    const bills = await Bill.find({
+      "payments.telegramId": telegramId
+    }).sort({ createdAt: -1 });
+
+    if (bills.length === 0) {
+      return safeReply(ctx, "📭 No payment history found.");
+    }
+
+    let totalPaid = 0;
+    let message = `📜 *Your Payment History*\n\n`;
+
+    bills.forEach((bill) => {
+      const payment = bill.payments.find(
+        (p) => p.telegramId === telegramId
+      );
+
+      if (!payment) return;
+
+      totalPaid += payment.amount;
+
+      message +=
+        `🗓 ${bill.cycleMonth || bill.dueDate.toDateString()}\n` +
+        `💰 ₦${payment.amount}\n` +
+        `🔗 Ref: ${payment.reference}\n\n`;
+    });
+
+    message += `💵 *Total Paid:* ₦${totalPaid.toFixed(2)}`;
+
+    safeReply(ctx, message, { parse_mode: "Markdown" });
+
+  } catch (err) {
+    console.error(err);
+    safeReply(ctx, "❌ Could not fetch history.");
+  }
+});
+
+/* ================================
+   ADMIN MANUAL PAYMENT ENTRY
+================================ */
+bot.command("markpaid", async (ctx) => {
+  try {
+    if (!isAdmin(ctx))
+      return safeReply(ctx, "❌ Admin only.");
+
+    if (!ctx.message.reply_to_message)
+      return safeReply(ctx, "⚠ Reply to tenant's message with /markpaid");
+
+    const telegramId =
+      ctx.message.reply_to_message.from.id.toString();
+
+    const user = await User.findOne({ telegramId });
+    if (!user)
+      return safeReply(ctx, "❌ User not found.");
+
+    const bill = await getActiveBill();
+    if (!bill)
+      return safeReply(ctx, "❌ No active bill.");
+
+    if (bill.payments.find(p => p.telegramId === telegramId))
+      return safeReply(ctx, "⚠ Already marked as paid.");
+
+    bill.payments.push({
+      telegramId,
+      fullName: user.fullName,
+      amount: bill.splitAmount,
+      reference: "MANUAL_ENTRY",
+    });
+
+    await bill.save();
+
+    const paidCount = bill.payments.length;
+
+    await bot.telegram.sendMessage(
+      process.env.GROUP_ID,
+      `🧾 Manual payment recorded for ${user.fullName}\nProgress: ${paidCount}/${bill.totalPeople}`
+    );
+
+    if (paidCount === bill.totalPeople) {
+      bill.isActive = false;
+      await bill.save();
+
+      await bot.telegram.sendMessage(
+        process.env.GROUP_ID,
+        `✅ Bill CLOSED.`
+      );
+    }
+
+  } catch (err) {
+    console.error(err);
+    safeReply(ctx, "❌ Could not record payment.");
+  }
+});
+
+/* ================================
+   BILL ARCHIVE
+================================ */
+bot.command("bills", async (ctx) => {
+  try {
+    if (!isAdmin(ctx))
+      return safeReply(ctx, "❌ Admin only.");
+
+    const bills = await Bill.find()
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    if (bills.length === 0)
+      return safeReply(ctx, "📭 No bills found.");
+
+    let message = `📚 *Recent Bills*\n\n`;
+
+    bills.forEach((bill) => {
+      const collected = bill.payments.reduce(
+        (sum, p) => sum + p.amount,
+        0
+      );
+
+      message +=
+        `🗓 ${bill.cycleMonth || bill.dueDate.toDateString()}\n` +
+        `💰 Total: ₦${bill.totalAmount}\n` +
+        `💵 Collected: ₦${collected.toFixed(2)}\n` +
+        `📊 Status: ${bill.isActive ? "ACTIVE" : "CLOSED"}\n\n`;
+    });
+
+    safeReply(ctx, message, { parse_mode: "Markdown" });
+
+  } catch (err) {
+    console.error(err);
+    safeReply(ctx, "❌ Could not fetch bills.");
+  }
+});
+
 /* =================================
    INITIALIZE PAYSTACK (LIVE READY)
 ================================= */
