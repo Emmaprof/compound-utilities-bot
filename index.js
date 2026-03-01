@@ -182,7 +182,7 @@ bot.command("pay", async (ctx) => {
       telegramId,
       `💳 Electricity Bill\n\nAmount: ₦${bill.splitAmount.toFixed(
         2
-      )}\n\nChoose payment method below:`,
+      )}\n\n Click below to pay securely::`,
       Markup.inlineKeyboard([Markup.button.url("💰 Pay Now", link)])
     );
 
