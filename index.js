@@ -251,48 +251,37 @@ bot.command("newbill", async (ctx) => {
       return safeReply(ctx, "Amount must be greater than 0.");
 
     const taggedUsernames = parts
-      .slice(2)
-      .filter(p => p.startsWith("@"))
-      .map(u => u.replace("@", "").toLowerCase());
+  .slice(2)
+  .filter(p => p.startsWith("@"))
+  .map(u => u.replace("@", "").toLowerCase());
 
-    let tenants;
+let tenants;
 
-    /* ===============================
-       MODE 1 → All active users (INCLUDING ADMIN)
-    ================================ */
-    if (taggedUsernames.length === 0) {
+if (taggedUsernames.length === 0) {
+  // SHARE WITH ALL ACTIVE USERS (INCLUDING ADMIN)
+  tenants = await User.find({ isActive: true });
 
-      tenants = await User.find({ isActive: true });
+} else {
 
-      if (!tenants.length)
-        return safeReply(ctx, "No active users found.");
+  const allActive = await User.find({ isActive: true });
 
-    } else {
+  tenants = allActive.filter(user =>
+    user.username &&
+    taggedUsernames.includes(user.username.toLowerCase())
+  );
 
-      /* ===============================
-         MODE 2 → Tagged users + Admin
-      ================================ */
+  if (tenants.length !== taggedUsernames.length)
+    return safeReply(ctx, "One or more tagged users not found or missing username.");
 
-      const allActiveUsers = await User.find({ isActive: true });
+  // ALWAYS INCLUDE ADMIN
+  const adminUser = allActive.find(
+    u => u.telegramId === process.env.ADMIN_ID
+  );
 
-      tenants = allActiveUsers.filter(u =>
-        u.username &&
-        taggedUsernames.includes(u.username.toLowerCase())
-      );
-
-      if (tenants.length !== taggedUsernames.length)
-        return safeReply(ctx, "One or more tagged users not found or missing username.");
-
-      // ALWAYS include admin if not tagged
-      const adminUser = allActiveUsers.find(
-        u => u.telegramId === process.env.ADMIN_ID
-      );
-
-      if (adminUser && !tenants.some(t => t.telegramId === adminUser.telegramId)) {
-        tenants.push(adminUser);
-      }
-    }
-
+  if (adminUser && !tenants.some(t => t.telegramId === adminUser.telegramId)) {
+    tenants.push(adminUser);
+  }
+}
     if (!tenants.length)
       return safeReply(ctx, "No valid users to bill.");
 
