@@ -341,7 +341,7 @@ bot.command("newbill", async (ctx) => {
 });
 
 /* =====================================================
-   PAY
+   PAY (FIXED PRODUCTION SAFE)
 ===================================================== */
 bot.command("pay", async (ctx) => {
   try {
@@ -357,10 +357,15 @@ bot.command("pay", async (ctx) => {
     if (!bill) return safeReply(ctx, "❌ No active bill.");
 
     if (!bill.billedTenants.includes(telegramId))
-    return safeReply(ctx, "You are not included in this bill.");
+      return safeReply(ctx, "You are not included in this bill.");
 
     if (bill.payments.some(p => p.telegramId === telegramId))
       return safeReply(ctx, "✅ Already paid.");
+
+    /* ================================
+       PAYSTACK INITIALIZATION
+       DO NOT FORCE CHANNELS
+    ================================= */
 
     const response = await axios.post(
       "https://api.paystack.co/transaction/initialize",
@@ -368,34 +373,40 @@ bot.command("pay", async (ctx) => {
         email: `${telegramId}@compound.com`,
         amount: Math.round(bill.splitAmount * 100),
         currency: "NGN",
-        channels: ["card", "bank", "ussd", "bank_transfer"],
-        metadata: { telegramId },
+        metadata: { telegramId }
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json"
         },
       }
     );
+
+    if (!response.data?.data?.authorization_url) {
+      console.error("Paystack bad response:", response.data);
+      return safeReply(ctx, "❌ Unable to generate payment link.");
+    }
 
     const link = response.data.data.authorization_url;
 
     await ctx.telegram.sendMessage(
       telegramId,
-      `💳 Electricity Bill\n\nAmount: ${formatCurrency(bill.splitAmount)}`,
+      `💳 Electricity Bill\n\n` +
+      `Amount: ${formatCurrency(bill.splitAmount)}\n\n` +
+      `Click below to pay securely:`,
       Markup.inlineKeyboard([
         Markup.button.url("💰 Pay Now", link)
       ])
     );
 
-    safeReply(ctx, "🔒 Payment link sent privately.");
+    return safeReply(ctx, "🔒 Payment link sent privately.");
 
   } catch (err) {
-    console.error(err);
-    safeReply(ctx, "❌ Payment error.");
+    console.error("PAY ERROR:", err.response?.data || err.message);
+    return safeReply(ctx, "❌ Payment initialization failed.");
   }
 });
-
 /* =====================================================
    HISTORY
 ===================================================== */
