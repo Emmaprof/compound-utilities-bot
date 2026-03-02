@@ -621,6 +621,55 @@ bot.command("broadcast", async (ctx) => {
     safeReply(ctx, "❌ An error occurred while broadcasting the message.");
   }
 });
+
+/* =====================================================
+   COMMAND: /export (CSV LEDGER DOWNLOAD)
+===================================================== */
+bot.command("export", async (ctx) => {
+  try {
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+    }
+
+    if (!isAdmin(ctx)) return;
+
+    // Fetch the currently active bill
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) {
+      return safeReply(ctx, "📭 There is no active bill to export.");
+    }
+
+    if (bill.payments.length === 0) {
+      return safeReply(ctx, "📄 The active bill has no payments yet. Nothing to export.");
+    }
+
+    // Build the CSV Header
+    let csvString = "Telegram ID,Full Name,Amount Paid (NGN),Reference,Date Paid\n";
+
+    // Loop through payments and build the rows
+    for (const p of bill.payments) {
+      // Escape commas in names to prevent CSV formatting breaks
+      const safeName = p.fullName ? p.fullName.replace(/,/g, "") : "Unknown";
+      const dateStr = p.paidAt.toISOString();
+      
+      csvString += `${p.telegramId},${safeName},${p.amount},${p.reference},${dateStr}\n`;
+    }
+
+    // Convert string to a file buffer
+    const buffer = Buffer.from(csvString, "utf-8");
+
+    // Send the file to the admin
+    await ctx.replyWithDocument(
+      { source: buffer, filename: `Compound_Ledger_${new Date().toISOString().split('T')[0]}.csv` },
+      { caption: "📊 Here is the latest payment data ready for your spreadsheets." }
+    );
+
+  } catch (err) {
+    console.error("Export command error:", err);
+    safeReply(ctx, "❌ An error occurred while generating the CSV file.");
+  }
+});
+
 /* =====================================================
    WEBHOOK (PAYSTACK LISTENER)
 ===================================================== */
