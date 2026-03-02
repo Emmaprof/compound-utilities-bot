@@ -500,6 +500,59 @@ bot.command("activate", async (ctx) => {
 });
 
 /* =====================================================
+   COMMAND: /ledger (ADMIN DASHBOARD)
+===================================================== */
+bot.command("ledger", async (ctx) => {
+  try {
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+    }
+
+    if (!isAdmin(ctx)) return;
+
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) {
+      return safeReply(ctx, "📭 There is no active bill to report on.");
+    }
+
+    const paidIds = bill.payments.map(p => String(p.telegramId));
+    const allTenantIds = bill.billedTenants.map(id => String(id));
+    const unpaidIds = allTenantIds.filter(id => !paidIds.includes(id));
+
+    // Fetch user data to display clean names instead of raw Telegram IDs
+    const allUsers = await User.find({ telegramId: { $in: allTenantIds } });
+
+    const getUserDisplay = (id) => {
+      const u = allUsers.find(user => String(user.telegramId) === id);
+      return u ? mentionUser(u) : `Unknown (${id})`;
+    };
+
+    const paidMentions = paidIds.length > 0
+      ? paidIds.map(getUserDisplay).join(", ")
+      : "None yet";
+
+    const unpaidMentions = unpaidIds.length > 0
+      ? unpaidIds.map(getUserDisplay).join("\n- ")
+      : "Everyone has paid! 🎉";
+
+    const totalCollected = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+
+    const msg =
+      `📊 <b>Real-Time Billing Ledger</b>\n\n` +
+      `💰 <b>Collected:</b> ${formatCurrency(totalCollected)} / ${formatCurrency(bill.totalAmount)}\n` +
+      `👥 <b>Progress:</b> ${paidIds.length} / ${bill.totalPeople} tenants\n\n` +
+      `✅ <b>PAID:</b>\n${paidMentions}\n\n` +
+      `❌ <b>UNPAID:</b>\n${unpaidIds.length > 0 ? "- " + unpaidMentions : unpaidMentions}`;
+
+    safeReply(ctx, msg, { parse_mode: "HTML" });
+
+  } catch (err) {
+    console.error("Ledger command error:", err);
+    safeReply(ctx, "❌ An error occurred while generating the ledger.");
+  }
+});
+
+/* =====================================================
    WEBHOOK (PAYSTACK LISTENER)
 ===================================================== */
 app.post("/paystack-webhook", async (req, res) => {
