@@ -551,7 +551,76 @@ bot.command("ledger", async (ctx) => {
     safeReply(ctx, "❌ An error occurred while generating the ledger.");
   }
 });
+/* =====================================================
+   COMMAND: /broadcast (COMPOUND ANNOUNCEMENTS)
+===================================================== */
+bot.command("broadcast", async (ctx) => {
+  try {
+    // Keep broadcasts restricted to your private admin chat
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+    }
 
+    if (!isAdmin(ctx)) return;
+
+    // Extract the actual message from the command
+    const messageText = ctx.message.text.replace("/broadcast", "").trim();
+
+    if (!messageText) {
+      return safeReply(
+        ctx,
+        "📝 Usage: `/broadcast <your message>`\nExample: `/broadcast The plumber is arriving at 2 PM to fix the main pipe.`",
+        { parse_mode: "Markdown" }
+      );
+    }
+
+    // Fetch all active tenants
+    const users = await User.find({ isActive: true });
+
+    if (users.length === 0) {
+      return safeReply(ctx, "📭 There are no active users to broadcast to.");
+    }
+
+    // Acknowledge the command immediately
+    safeReply(ctx, `⏳ Broadcasting message to ${users.length} tenants...`);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    // Helper function to respect Telegram's API rate limits
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    for (const user of users) {
+      try {
+        await bot.telegram.sendMessage(
+          user.telegramId,
+          `📢 <b>Compound Announcement</b>\n\n${messageText}`,
+          { parse_mode: "HTML" }
+        );
+        successCount++;
+      } catch (err) {
+        console.error(`Failed to message ${user.telegramId}:`, err.message);
+        failCount++;
+      }
+      
+      // Pause for 50ms to prevent hitting Telegram's spam limits
+      await sleep(50);
+    }
+
+    // Deliver the final report to the Admin
+    safeReply(
+      ctx,
+      `✅ <b>Broadcast Complete</b>\n\n` +
+      `📨 Delivered: ${successCount}\n` +
+      `❌ Failed: ${failCount} (These users may have blocked the bot)`,
+      { parse_mode: "HTML" }
+    );
+
+  } catch (err) {
+    console.error("Broadcast command error:", err);
+    safeReply(ctx, "❌ An error occurred while broadcasting the message.");
+  }
+});
 /* =====================================================
    WEBHOOK (PAYSTACK LISTENER)
 ===================================================== */
