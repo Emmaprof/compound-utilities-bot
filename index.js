@@ -251,6 +251,111 @@ bot.command("pay", async (ctx) => {
     safeReply(ctx, "❌ An unexpected error occurred while processing your request.");
   }
 });
+/* =====================================================
+   COMMAND: /history (USER PAYMENT HISTORY)
+===================================================== */
+bot.command("history", async (ctx) => {
+  try {
+    // Keep history private to avoid spamming the compound group
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+      return safeReply(ctx, "⚠ Please send me this command in our private chat.");
+    }
+
+    const telegramId = String(ctx.from.id);
+
+    // Find all bills where this user has a successful payment, sorted newest first
+    const bills = await Bill.find({
+      "payments.telegramId": telegramId
+    }).sort({ createdAt: -1 });
+
+    if (!bills || bills.length === 0) {
+      return safeReply(ctx, "📭 You do not have any payment history yet.");
+    }
+
+    let totalPaid = 0;
+    let msg = `📜 <b>Your Payment History</b>\n\n`;
+
+    for (const bill of bills) {
+      // Extract just this user's payment from the embedded array
+      const payment = bill.payments.find(p => String(p.telegramId) === telegramId);
+      
+      if (payment) {
+        totalPaid += payment.amount;
+        msg += 
+          `🗓 <b>Date:</b> ${payment.paidAt.toDateString()}\n` +
+          `💰 <b>Amount:</b> ${formatCurrency(payment.amount)}\n` +
+          `🆔 <b>Ref:</b> <code>${payment.reference}</code>\n` +
+          `---------------------------\n`;
+      }
+    }
+
+    msg += `\n🏆 <b>Total All-Time Paid:</b> ${formatCurrency(totalPaid)}`;
+
+    return safeReply(ctx, msg, { parse_mode: "HTML" });
+
+  } catch (err) {
+    console.error("History command error:", err);
+    safeReply(ctx, "❌ An error occurred while fetching your history.");
+  }
+});
+
+/* =====================================================
+   COMMAND: /mybalance (CURRENT OUTSTANDING BALANCE)
+===================================================== */
+bot.command("mybalance", async (ctx) => {
+  try {
+    // Keep balances private
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+      return safeReply(ctx, "⚠ Please send me this command in our private chat.");
+    }
+
+    const telegramId = String(ctx.from.id);
+    
+    // Fetch the single active bill
+    const bill = await Bill.findOne({ isActive: true });
+
+    if (!bill) {
+      return safeReply(ctx, "✅ There is no active electricity bill right now. You are all caught up!");
+    }
+
+    // Check if the user is even on this specific bill
+    if (!bill.billedTenants.includes(telegramId)) {
+      return safeReply(ctx, "✅ You were not included in the current active bill. Your balance is ₦0.00.");
+    }
+
+    // Check if they have already paid it
+    const hasPaid = bill.payments.some(p => String(p.telegramId) === telegramId);
+
+    if (hasPaid) {
+      const payment = bill.payments.find(p => String(p.telegramId) === telegramId);
+      return safeReply(
+        ctx, 
+        `✅ <b>Account Settled</b>\n\nYou already paid ${formatCurrency(payment.amount)} for the current cycle on ${payment.paidAt.toDateString()}.`,
+        { parse_mode: "HTML" }
+      );
+    }
+
+    // If they are on the bill and haven't paid, calculate the days left
+    const daysLeft = Math.ceil((new Date(bill.dueDate) - new Date()) / (1000 * 60 * 60 * 24));
+    const urgency = daysLeft < 0 ? "🚨 OVERDUE" : `⏳ ${daysLeft} days remaining`;
+
+    return safeReply(
+      ctx,
+      `⚠ <b>Outstanding Balance</b>\n\n` +
+      `Amount Due: <b>${formatCurrency(bill.splitAmount)}</b>\n` +
+      `Due Date: ${bill.dueDate.toDateString()}\n` +
+      `Status: ${urgency}\n\n` +
+      `Type /pay to settle your balance now.`,
+      { parse_mode: "HTML" }
+    );
+
+  } catch (err) {
+    console.error("MyBalance command error:", err);
+    safeReply(ctx, "❌ An error occurred while checking your balance.");
+  }
+});
 
 /* =====================================================
    WEBHOOK (PAYSTACK LISTENER)
