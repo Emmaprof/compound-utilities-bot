@@ -85,6 +85,9 @@ bot.start(async (ctx) => {
 /* =====================================================
    COMMAND: /newbill (ADMIN ONLY)
 ===================================================== */
+/* =====================================================
+   COMMAND: /newbill (ADMIN GUARANTEED)
+===================================================== */
 bot.command("newbill", async (ctx) => {
   try {
     if (ctx.chat.type !== "private") {
@@ -105,18 +108,24 @@ bot.command("newbill", async (ctx) => {
     let users = [];
 
     if (taggedUsernames.length === 0) {
+      // MODE 1: All active users
       users = await User.find({ isActive: true });
     } else {
+      // MODE 2: Specific tagged users
       const regexUsernames = taggedUsernames.map(u => new RegExp(`^${u}$`, "i"));
       users = await User.find({ isActive: true, username: { $in: regexUsernames } });
 
       if (users.length !== taggedUsernames.length) {
         return safeReply(ctx, "⚠️ Error: One or more tagged users were not found in the database. Ensure they have typed /start.");
       }
+    }
 
-      // Ensure Admin is included
-      const adminUser = await User.findOne({ telegramId: process.env.ADMIN_ID });
-      if (adminUser && !users.some(u => u.telegramId === adminUser.telegramId)) {
+    // 🔥 THE FIX: Universal Admin Inclusion
+    // This runs for EVERY bill, guaranteeing the Admin is never left out.
+    const adminUser = await User.findOne({ telegramId: process.env.ADMIN_ID });
+    if (adminUser) {
+      const isAdminAlreadyIncluded = users.some(u => String(u.telegramId) === String(adminUser.telegramId));
+      if (!isAdminAlreadyIncluded) {
         users.push(adminUser);
       }
     }
@@ -130,7 +139,7 @@ bot.command("newbill", async (ctx) => {
     // Deactivate old bills
     await Bill.updateMany({ isActive: true }, { isActive: false });
 
-    // Create the new bill with STRICT string IDs
+    // Create the new bill
     await Bill.create({
       totalAmount: amount,
       splitAmount,
