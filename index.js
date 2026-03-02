@@ -203,8 +203,10 @@ bot.command("pay", async (ctx) => {
     const bill = await getActiveBill();
     if (!bill) return safeReply(ctx, "❌ No active bill.");
 
-    if (!bill.billedTenants.includes(telegramId))
-      return safeReply(ctx, "You are not part of this bill.");
+    const tenantIds = bill.billedTenants.map(id => id.toString());
+
+    if (!tenantIds.includes(telegramId))
+        return safeReply(ctx, "You are not part of this bill.");
 
     if (bill.payments.some(p => p.telegramId === telegramId))
       return safeReply(ctx, "✅ Already paid.");
