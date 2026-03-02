@@ -2,16 +2,22 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
     telegramId: {
-        type: String,
+        type: String, // Stored as a string to prevent JS integer overflow
         required: true,
         unique: true
     },
     isActive: {
         type: Boolean,
         default: true
-        },
-    username: String,
-    fullName: String,
+    },
+    username: {
+        type: String,
+        default: ""
+    },
+    fullName: {
+        type: String,
+        default: ""
+    },
     role: {
         type: String,
         enum: ['ADMIN', 'TENANT'],

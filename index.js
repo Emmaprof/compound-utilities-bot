@@ -10,33 +10,28 @@ const connectDB = require("./config/db");
 const User = require("./models/User");
 const Bill = require("./models/Bill");
 
+// Initialize Database
 connectDB();
 
-/* =====================================================
-   INIT
-===================================================== */
-
-if (!process.env.BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN missing in .env");
+if (!process.env.BOT_TOKEN || !process.env.PAYSTACK_SECRET_KEY) {
+  console.error("❌ CRITICAL: Missing environment variables.");
   process.exit(1);
-}
-
-if (!process.env.PAYSTACK_SECRET_KEY) {
-  console.error("❌ PAYSTACK_SECRET_KEY missing in .env");
 }
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const app = express();
 
+/* =====================================================
+   MIDDLEWARE (ORDER IS CRITICAL FOR WEBHOOKS)
+===================================================== */
+// Paystack webhook MUST be parsed as raw data to verify the cryptographic signature
 app.use("/paystack-webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 /* =====================================================
    UTILITIES
 ===================================================== */
-
-const isAdmin = (ctx) =>
-  ctx.from.id.toString() === process.env.ADMIN_ID;
+const isAdmin = (ctx) => ctx.from.id.toString() === process.env.ADMIN_ID;
 
 const safeReply = async (ctx, message, options = {}) => {
   try {
@@ -46,184 +41,159 @@ const safeReply = async (ctx, message, options = {}) => {
   }
 };
 
-const deleteCommandMessage = async (ctx) => {
-  if (ctx.chat.type !== "private") {
-    try { await ctx.deleteMessage(); } catch {}
-  }
-};
-
-const getActiveBill = async () => {
-  const bill = await Bill.findOne({ isActive: true });
-  if (!bill) return null;
-
-  bill.billedTenants = bill.billedTenants || [];
-  bill.payments = bill.payments || [];
-
-  return bill;
-};
-
-const formatCurrency = (amount) =>
-  `₦${Number(amount || 0).toFixed(2)}`;
+const formatCurrency = (amount) => `₦${Number(amount || 0).toFixed(2)}`;
 
 const mentionUser = (user) => {
   if (user.username) return `@${user.username}`;
-  return `<a href="tg://user?id=${user.telegramId}">${user.fullName}</a>`;
+  return `<a href="tg://user?id=${user.telegramId}">${user.fullName || "Tenant"}</a>`;
 };
 
 /* =====================================================
-   START
+   COMMAND: /start (REGISTRATION)
 ===================================================== */
-
 bot.start(async (ctx) => {
   try {
     const telegramId = ctx.from.id.toString();
+    const username = ctx.from.username || "";
+    const fullName = `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim();
 
     let user = await User.findOne({ telegramId });
 
     if (!user) {
       user = await User.create({
         telegramId,
-        username: ctx.from.username || "",
-        fullName: `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim(),
+        username,
+        fullName,
         role: telegramId === process.env.ADMIN_ID ? "ADMIN" : "TENANT",
         isActive: true,
       });
-
-      return safeReply(ctx, `✅ Registered as ${user.role}`);
+      return safeReply(ctx, `✅ Successfully registered as ${user.role}. You can now receive bills.`);
     }
 
-    safeReply(ctx, `👋 Welcome back ${user.fullName}`);
+    // Update details in case they changed their Telegram name
+    user.username = username;
+    user.fullName = fullName;
+    await user.save();
 
+    safeReply(ctx, `👋 Welcome back, ${user.fullName}!`);
   } catch (err) {
-    console.error(err);
-    safeReply(ctx, "❌ Registration error.");
+    console.error("Start command error:", err);
+    safeReply(ctx, "❌ An error occurred during registration.");
   }
 });
 
 /* =====================================================
-   NEW BILL (CASE-INSENSITIVE FIX)
+   COMMAND: /newbill (ADMIN ONLY)
 ===================================================== */
-
 bot.command("newbill", async (ctx) => {
   try {
-    deleteCommandMessage(ctx);
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+    }
+    
     if (!isAdmin(ctx)) return;
 
     const parts = ctx.message.text.trim().split(/\s+/);
-    if (parts.length < 2)
-      return safeReply(ctx, "Usage:\n/newbill 2000\n/newbill 2000 @user1 @user2");
+    if (parts.length < 2) {
+      return safeReply(ctx, "📝 Usage:\n`/newbill 2000` (Bills everyone)\n`/newbill 2000 @user1 @user2` (Specific users)", { parse_mode: "Markdown" });
+    }
 
     const amount = parseFloat(parts[1]);
-    if (!amount || amount <= 0)
-      return safeReply(ctx, "Invalid amount.");
+    if (isNaN(amount) || amount <= 0) return safeReply(ctx, "❌ Invalid amount.");
 
-    // Extract tagged usernames without forcing lowercase
-    const taggedUsernames = parts
-      .slice(2)
-      .filter(p => p.startsWith("@"))
-      .map(u => u.replace("@", ""));
-
+    const taggedUsernames = parts.slice(2).filter(p => p.startsWith("@")).map(u => u.replace("@", ""));
     let users = [];
 
     if (taggedUsernames.length === 0) {
-      // ALL ACTIVE USERS INCLUDING ADMIN
       users = await User.find({ isActive: true });
     } else {
-      // Create case-insensitive regex for each tagged user
       const regexUsernames = taggedUsernames.map(u => new RegExp(`^${u}$`, "i"));
-      
-      users = await User.find({
-        isActive: true,
-        username: { $in: regexUsernames }
-      });
+      users = await User.find({ isActive: true, username: { $in: regexUsernames } });
 
-      if (users.length !== taggedUsernames.length)
-        return safeReply(ctx, "⚠️ Some tagged users were not found or are inactive.");
+      if (users.length !== taggedUsernames.length) {
+        return safeReply(ctx, "⚠️ Error: One or more tagged users were not found in the database. Ensure they have typed /start.");
+      }
 
-      // ALWAYS include admin
+      // Ensure Admin is included
       const adminUser = await User.findOne({ telegramId: process.env.ADMIN_ID });
-      if (adminUser && !users.some(u => u.telegramId.toString() === adminUser.telegramId.toString())) {
+      if (adminUser && !users.some(u => u.telegramId === adminUser.telegramId)) {
         users.push(adminUser);
       }
     }
 
-    if (!users.length)
-      return safeReply(ctx, "No users to bill.");
+    if (!users.length) return safeReply(ctx, "❌ No users found to bill.");
 
     const splitAmount = amount / users.length;
-
-    await Bill.updateMany({ isActive: true }, { isActive: false });
-
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 7);
 
+    // Deactivate old bills
+    await Bill.updateMany({ isActive: true }, { isActive: false });
+
+    // Create the new bill with STRICT string IDs
     await Bill.create({
       totalAmount: amount,
       splitAmount,
       totalPeople: users.length,
       dueDate,
       payments: [],
-      billedTenants: users.map(u => u.telegramId.toString()), // Force string IDs
+      billedTenants: users.map(u => String(u.telegramId)),
       isActive: true,
-      createdAt: new Date()
     });
 
     const mentions = users.map(mentionUser).join(" ");
 
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `⚡ <b>New Electricity Bill</b>\n\n` +
+      `⚡ <b>New Compound Electricity Bill</b>\n\n` +
       `💰 Total: ${formatCurrency(amount)}\n` +
-      `👥 Sharing: ${users.length}\n` +
+      `👥 Sharing: ${users.length} people\n` +
       `💵 Each: ${formatCurrency(splitAmount)}\n` +
       `📅 Due: ${dueDate.toDateString()}\n\n` +
-      `${mentions}`,
+      `📢 ${mentions}`,
       { parse_mode: "HTML" }
     );
 
   } catch (err) {
     console.error("NewBill error:", err);
-    safeReply(ctx, "❌ Bill creation failed.");
+    safeReply(ctx, "❌ Fatal error creating the bill.");
   }
 });
 
 /* =====================================================
-   PAY (ISOLATED DM HANDLING)
+   COMMAND: /pay (PRODUCTION SAFE)
 ===================================================== */
-
 bot.command("pay", async (ctx) => {
   try {
-    deleteCommandMessage(ctx);
+    if (ctx.chat.type !== "private") {
+      try { await ctx.deleteMessage(); } catch {}
+    }
 
-    const telegramId = ctx.from.id.toString();
+    const telegramId = String(ctx.from.id);
     const user = await User.findOne({ telegramId });
 
-    if (!user) return safeReply(ctx, "❌ Not registered. Send me a private message to register.");
-    if (!user.isActive) return safeReply(ctx, "🚫 Inactive.");
+    if (!user) return safeReply(ctx, "❌ You must register first. Send me a private `/start` message.");
+    if (!user.isActive) return safeReply(ctx, "🚫 Your account is inactive.");
 
-    const bill = await getActiveBill();
-    if (!bill) return safeReply(ctx, "❌ No active bill.");
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) return safeReply(ctx, "❌ There is no active bill right now.");
 
-    // Ensure strict string comparison
-    const tenantIds = bill.billedTenants.map(id => id.toString());
+    if (!bill.billedTenants.includes(telegramId)) {
+      return safeReply(ctx, "❌ You are not included in the current bill.");
+    }
 
-    if (!tenantIds.includes(telegramId))
-        return safeReply(ctx, "❌ You are not part of this bill.");
+    if (bill.payments.some(p => p.telegramId === telegramId)) {
+      return safeReply(ctx, "✅ You have already paid this bill.");
+    }
 
-    if (bill.payments.some(p => p.telegramId === telegramId))
-      return safeReply(ctx, "✅ Already paid.");
-
-    if (!process.env.PAYSTACK_SECRET_KEY)
-      return safeReply(ctx, "❌ Payment system not configured.");
-
-    // 1. ISOLATED PAYSTACK INITIALIZATION
-    let response;
+    // Step 1: Initialize Paystack securely
+    let paystackRes;
     try {
-      response = await axios.post(
+      paystackRes = await axios.post(
         "https://api.paystack.co/transaction/initialize",
         {
-          email: `${telegramId}@compound.com`,
-          amount: Math.round(bill.splitAmount * 100),
+          email: `${telegramId}@compound-bot.com`, // Dummy email required by Paystack
+          amount: Math.round(bill.splitAmount * 100), // Paystack requires Kobo/Cents
           currency: "NGN",
           metadata: { telegramId }
         },
@@ -232,118 +202,146 @@ bot.command("pay", async (ctx) => {
             Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
             "Content-Type": "application/json"
           },
-          timeout: 10000
+          timeout: 8000
         }
       );
-    } catch (paystackErr) {
-      console.error("Paystack Error:", paystackErr.response?.data || paystackErr.message);
-      return safeReply(ctx, "❌ Payment provider is currently unavailable.");
+    } catch (apiErr) {
+      console.error("Paystack Init Error:", apiErr.response?.data || apiErr.message);
+      return safeReply(ctx, "❌ Payment provider is down. Try again later.");
     }
 
-    const link = response.data?.data?.authorization_url;
+    const authUrl = paystackRes.data?.data?.authorization_url;
+    if (!authUrl) return safeReply(ctx, "❌ Failed to generate a payment link.");
 
-    if (!link) {
-      return safeReply(ctx, "❌ Unable to generate payment link.");
-    }
-
-    // 2. ISOLATED TELEGRAM DM HANDLING
+    // Step 2: Attempt to DM the user
     try {
       await ctx.telegram.sendMessage(
         telegramId,
-        `💳 Electricity Bill\nAmount: ${formatCurrency(bill.splitAmount)}`,
-        Markup.inlineKeyboard([
-          Markup.button.url("💰 Pay Now", link)
-        ])
+        `💳 <b>Electricity Bill Checkout</b>\n\nAmount Due: ${formatCurrency(bill.splitAmount)}`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([Markup.button.url("💰 Pay Securely Now", authUrl)])
+        }
       );
-      return safeReply(ctx, "🔒 Payment link sent privately. Check your DMs!");
+      
+      // If triggered from a group, let them know in the group that a DM was sent
+      if (ctx.chat.type !== "private") {
+        return safeReply(ctx, "🔒 I have sent your private payment link to your DMs.");
+      }
     } catch (tgErr) {
-      console.error("Telegram DM Error:", tgErr.message);
+      console.error("Telegram DM block:", tgErr.message);
       return safeReply(
         ctx,
-        "❌ I can't DM you the payment link because you haven't started a chat with me.\n\n" +
-        "👉 **Please click my profile, send me a `/start` message, and then try `/pay` again.**",
+        "❌ **I cannot send you the payment link!**\n\nTelegram blocks bots from sending private messages unless you message them first. Please click my profile, send me `/start`, and then type `/pay` again.",
         { parse_mode: "Markdown" }
       );
     }
 
   } catch (err) {
-    console.error("PAY COMMAND FATAL ERROR:", err);
-    safeReply(ctx, "❌ An unexpected error occurred.");
+    console.error("Pay command error:", err);
+    safeReply(ctx, "❌ An unexpected error occurred while processing your request.");
   }
 });
 
 /* =====================================================
-   WEBHOOK
+   WEBHOOK (PAYSTACK LISTENER)
 ===================================================== */
-
 app.post("/paystack-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-paystack-signature"];
     const hash = crypto
       .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
-      .update(req.body)
+      .update(req.body) // req.body is raw buffer here because of express.raw()
       .digest("hex");
 
-    if (hash !== signature) return res.sendStatus(401);
+    if (hash !== signature) {
+      console.warn("⚠️ Unauthorized webhook attempt.");
+      return res.sendStatus(401);
+    }
 
     const event = JSON.parse(req.body.toString());
-    if (event.event !== "charge.success")
-      return res.sendStatus(200);
+    
+    // Always return 200 quickly to acknowledge receipt to Paystack
+    res.sendStatus(200);
 
-    const telegramId = event.data.metadata.telegramId.toString();
+    if (event.event !== "charge.success") return;
+
+    const telegramId = String(event.data.metadata.telegramId);
     const reference = event.data.reference;
-    const amount = event.data.amount / 100;
+    const amountPaid = event.data.amount / 100;
 
-    const bill = await getActiveBill();
-    if (!bill) return res.sendStatus(200);
-
-    if (bill.payments.some(p => p.reference === reference))
-      return res.sendStatus(200);
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill || !bill.billedTenants.includes(telegramId)) return;
+    
+    // Prevent duplicate processing of the same webhook reference
+    if (bill.payments.some(p => p.reference === reference)) return;
 
     const user = await User.findOne({ telegramId });
 
+    // Atomic update to the embedded array
     bill.payments.push({
       telegramId,
-      amount,
+      fullName: user ? user.fullName : "Unknown Tenant",
+      amount: amountPaid,
       reference,
       paidAt: new Date()
     });
-
+    
     await bill.save();
 
-    const userMention = user ? mentionUser(user) : "A tenant";
-
+    // Notify the group
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `🎉 ${userMention} paid ${formatCurrency(amount)}`,
+      `🎉 <b>Payment Received!</b>\n\n${mentionUser(user || { telegramId, fullName: "Tenant" })} has paid ${formatCurrency(amountPaid)}.\n📊 Progress: ${bill.payments.length} / ${bill.totalPeople} paid.`,
       { parse_mode: "HTML" }
     );
 
-    res.sendStatus(200);
-
   } catch (err) {
-    console.error("Webhook error:", err);
-    res.sendStatus(500);
+    console.error("Webhook processing error:", err);
   }
 });
 
 /* =====================================================
-   SERVER
+   CRON: DAILY REMINDER (Runs every day at 9 AM)
 ===================================================== */
+cron.schedule("0 9 * * *", async () => {
+  try {
+    const bill = await Bill.findOne({ isActive: true });
+    if (!bill) return;
 
-app.get("/", (req, res) =>
-  res.send("🚀 Compound Billing Engine Running")
-);
+    const paidIds = bill.payments.map(p => p.telegramId);
+    const unpaidIds = bill.billedTenants.filter(id => !paidIds.includes(id));
+
+    if (unpaidIds.length === 0) return;
+
+    const unpaidUsers = await User.find({ telegramId: { $in: unpaidIds } });
+    const mentions = unpaidUsers.map(mentionUser).join(" ");
+    
+    const daysLeft = Math.ceil((new Date(bill.dueDate) - new Date()) / (1000 * 60 * 60 * 24));
+
+    let timeText = daysLeft > 0 ? `${daysLeft} days left` : daysLeft === 0 ? "DUE TODAY" : `OVERDUE by ${Math.abs(daysLeft)} days`;
+
+    await bot.telegram.sendMessage(
+      process.env.GROUP_ID,
+      `⏰ <b>Electricity Bill Reminder</b>\n\nAmount Due: ${formatCurrency(bill.splitAmount)}\nStatus: ${timeText}\n\nWaiting on: ${mentions}`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    console.error("Cron Reminder Error:", err);
+  }
+});
+
+/* =====================================================
+   SERVER BOOT
+===================================================== */
+app.get("/", (req, res) => res.send("🚀 Compound Billing Engine is Online"));
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () =>
-  console.log(`Server running on ${PORT}`)
-);
+app.listen(PORT, () => console.log(`🌍 Server listening on port ${PORT}`));
 
-bot.launch().then(() =>
-  console.log("Bot running...")
-);
+bot.launch().then(() => console.log("🤖 Telegram Bot connected and polling..."));
 
+// Graceful shutdown
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
