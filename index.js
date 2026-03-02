@@ -125,8 +125,9 @@ bot.command("activate", async (ctx) => {
   } catch (err) { console.error(err); }
 });
 /* =====================================================
-   NEW BILL (TAGGED USERS VERSION)
-   Usage: /newbill 200 @user1 @user2
+   NEW BILL (DUAL MODE)
+   Mode 1: /newbill 2000
+   Mode 2: /newbill 2000 @user1 @user2
 ===================================================== */
 
 bot.command("newbill", async (ctx) => {
@@ -134,36 +135,66 @@ bot.command("newbill", async (ctx) => {
     deleteCommandMessage(ctx);
     if (!isAdmin(ctx)) return;
 
-    const parts = ctx.message.text.split(" ");
+    const parts = ctx.message.text.trim().split(/\s+/);
+
+    if (parts.length < 2)
+      return safeReply(ctx, "Usage:\n/newbill 2000\n/newbill 2000 @user1 @user2");
+
     const amount = parseFloat(parts[1]);
 
     if (!amount || amount <= 0)
-      return safeReply(ctx, "Usage: /newbill 200 @user1 @user2");
+      return safeReply(ctx, "Amount must be greater than 0.");
 
-    const usernames = parts.slice(2);
+    // Extract tagged usernames (if any)
+    const taggedUsernames = parts.slice(2)
+      .filter(p => p.startsWith("@"))
+      .map(u => u.replace("@", "").toLowerCase());
 
-    if (!usernames.length)
-      return safeReply(ctx, "Please tag at least one tenant.");
+    let tenants;
 
-    const cleanUsernames = usernames.map(u =>
-      u.replace("@", "").toLowerCase()
-    );
+    /* -------------------------------
+       MODE 1 → No tags = All tenants
+    -------------------------------- */
+    if (taggedUsernames.length === 0) {
 
-    const tenants = await User.find({
-      username: { $in: cleanUsernames },
-      isActive: true
-    });
+      tenants = await User.find({
+        isActive: true,
+        role: "TENANT"
+      });
 
+      if (!tenants.length)
+        return safeReply(ctx, "No active tenants found.");
+
+    } else {
+
+      /* -------------------------------
+         MODE 2 → Tagged tenants only
+      -------------------------------- */
+      tenants = await User.find({
+        username: { $in: taggedUsernames },
+        isActive: true,
+        role: "TENANT"
+      });
+
+      if (tenants.length !== taggedUsernames.length)
+        return safeReply(ctx, "Some tagged users are not valid active tenants.");
+    }
+
+    /* ----------------------------------
+       Final safety check
+    ----------------------------------- */
     if (!tenants.length)
-      return safeReply(ctx, "No valid active tenants found.");
+      return safeReply(ctx, "No valid tenants to bill.");
 
     const splitAmount = amount / tenants.length;
 
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 7);
 
+    // Deactivate old bills
     await Bill.updateMany({ isActive: true }, { isActive: false });
 
+    // Create new bill
     const newBill = await Bill.create({
       totalAmount: amount,
       splitAmount,
@@ -176,16 +207,19 @@ bot.command("newbill", async (ctx) => {
       createdAt: new Date()
     });
 
+    /* ----------------------------------
+       Build Clean Mentions
+    ----------------------------------- */
     const mentions = tenants
       .map(t => `@${t.username}`)
       .join(" ");
 
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `⚡ <b>New Electricity Bill</b>\n\n` +
-      `💰 Total: ${formatCurrency(amount)}\n` +
-      `👥 Sharing: ${tenants.length}\n` +
-      `💵 Each: ${formatCurrency(splitAmount)}\n` +
+      `⚡ <b>New Electricity Bill Created</b>\n\n` +
+      `💰 Total: ₦${amount.toFixed(2)}\n` +
+      `👥 Tenants: ${tenants.length}\n` +
+      `💵 Each: ₦${splitAmount.toFixed(2)}\n` +
       `📅 Due: ${dueDate.toDateString()}\n\n` +
       `📢 ${mentions}`,
       { parse_mode: "HTML" }
@@ -195,7 +229,6 @@ bot.command("newbill", async (ctx) => {
     console.error("NewBill error:", err);
   }
 });
-
 
 /* =====================================================
    MARK PAID (ADMIN MANUAL ENTRY)
