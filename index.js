@@ -807,9 +807,15 @@ app.post("/crypto-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-nowpayments-sig"];
     
-    // NowPayments requires HMAC SHA512 using their IPN Secret
+    // 1. NowPayments requires parsing the body first
+    const event = JSON.parse(req.body.toString());
+
+    // 2. Sort the JSON keys alphabetically (The NowPayments quirk)
+    const sortedString = JSON.stringify(event, Object.keys(event).sort());
+    
+    // 3. Hash the sorted string
     const hmac = crypto.createHmac("sha512", process.env.NOWPAYMENTS_IPN_SECRET);
-    hmac.update(req.body); // req.body is raw buffer
+    hmac.update(sortedString);
     const hash = hmac.digest("hex");
 
     if (hash !== signature) {
@@ -819,21 +825,18 @@ app.post("/crypto-webhook", async (req, res) => {
 
     // Acknowledge receipt immediately
     res.sendStatus(200);
-
-    const event = JSON.parse(req.body.toString());
     
     // Only process fully confirmed on-chain transactions
     if (event.payment_status !== "finished") return; 
 
-    // Extract ID from the custom order_id we created in /cryptopay
+    // Extract ID from the custom order_id created in /cryptopay
     const telegramId = String(event.order_id.split('-')[1]); 
-    const txHash = event.actually_paid_hash || event.payment_id; // The on-chain TX hash
+    const txHash = event.actually_paid_hash || event.payment_id;
     const amountPaidNGN = event.price_amount;
 
     const bill = await Bill.findOne({ isActive: true });
     if (!bill || !bill.billedTenants.includes(telegramId)) return;
     
-    // Prevent double-counting the same blockchain TX
     if (bill.payments.some(p => p.reference === `WEB3-${txHash}`)) return;
 
     const user = await User.findOne({ telegramId });
@@ -850,7 +853,7 @@ app.post("/crypto-webhook", async (req, res) => {
 
     await bot.telegram.sendMessage(
       process.env.GROUP_ID,
-      `🌐 <b>Web3 Payment Verified!</b>\n\n${mentionUser(user)} just paid their bill using Crypto.\n⛓️ TX: <code>${txHash.slice(0,6)}...${txHash.slice(-4)}</code>\n📊 Progress: ${bill.payments.length} / ${bill.totalPeople} paid.`,
+      `🌐 <b>Web3 Payment Verified!</b>\n\n${mentionUser(user || { telegramId, fullName: "Tenant" })} just paid their bill using Crypto.\n⛓️ TX: <code>${String(txHash).slice(0,6)}...${String(txHash).slice(-4)}</code>\n📊 Progress: ${bill.payments.length} / ${bill.totalPeople} paid.`,
       { parse_mode: "HTML" }
     );
 
