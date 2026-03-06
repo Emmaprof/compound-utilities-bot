@@ -863,6 +863,44 @@ app.post("/crypto-webhook", async (req, res) => {
   }
 });
 /* =====================================================
+   AUTOMATION: DUNE ANALYTICS DAILY SYNC
+===================================================== */
+cron.schedule("0 2 * * *", async () => { 
+  // "0 2 * * *" is standard server time for "Run at 2:00 AM every day"
+  try {
+    const bill = await Bill.findOne({ isActive: true });
+    
+    // If there is no active bill, or nobody has paid yet, skip the upload
+    if (!bill || bill.payments.length === 0) return;
+
+    // 1. Build the CSV string (Exactly like your /export command)
+    let csvString = "telegramId,fullName,amount,reference,paidAt\n";
+    
+    for (const p of bill.payments) {
+      // Remove commas from names so it doesn't break the CSV columns
+      const safeName = p.fullName ? p.fullName.replace(/,/g, "") : "Unknown";
+      csvString += `${p.telegramId},${safeName},${p.amount},${p.reference},${p.paidAt.toISOString()}\n`;
+    }
+
+    // 2. Send the CSV directly to your private Dune database
+    await axios.post(
+      "https://api.dune.com/api/v1/uploads/decentralizeddev/compound_payments/insert", 
+      csvString,
+      {
+        headers: {
+          "X-DUNE-API-KEY": process.env.DUNE_API_KEY,
+          "Content-Type": "text/csv"
+        }
+      }
+    );
+    
+    console.log("✅ Successfully synced daily payments to Dune Analytics.");
+
+  } catch (err) {
+    console.error("❌ Dune Sync Error:", err.response?.data || err.message);
+  }
+});
+/* =====================================================
    CRON: DAILY REMINDER (Runs every day at 9 AM)
 ===================================================== */
 cron.schedule("0 9 * * *", async () => {
