@@ -1005,6 +1005,9 @@ cron.schedule("0 2 * * *", async () => {
 /* =====================================================
    AUTOMATION: DAILY PAYMENT REMINDER (9:00 AM)
 ===================================================== */
+/* =====================================================
+   AUTOMATION: DAILY PAYMENT REMINDER (9:00 AM)
+===================================================== */
 // "0 9 * * *" means run at exactly 9:00 AM every day
 cron.schedule("0 9 * * *", async () => {
   try {
@@ -1030,26 +1033,26 @@ cron.schedule("0 9 * * *", async () => {
       u.username ? `@${u.username}` : `<a href="tg://user?id=${u.telegramId}">${u.fullName}</a>`
     ).join(", ");
 
-    // Construct the professional HTML invoice message
+    // Construct the professional HTML invoice message with the 10% warning
     const reminderMessage = 
       `⚠️ <b>DAILY UTILITY REMINDER</b> ⚠️\n\n` +
-      `💰 <b>Amount Due:</b> ₦${bill.splitAmount.toLocaleString()} per flat\n` +
+      `💰 <b>Base Amount:</b> ₦${bill.splitAmount.toLocaleString()} per flat\n` +
+      `📅 <b>Deadline:</b> ${bill.dueDate.toDateString()} at Midnight\n` +
+      `🚨 <i>(A 10% late fee applies automatically after this date)</i>\n\n` +
       `👥 <b>Status:</b> ${paidIds.length} out of ${bill.totalPeople} tenants have paid.\n\n` +
       `⏳ <b>Waiting on:</b> ${unpaidMentions || "Pending Tenants"}\n\n` +
-      `⚡ Please settle your balance today to avoid compound power disruption.\n\n` +
       `👉 Tap /pay for Naira (Paystack)\n` +
       `👉 Tap /cryptopay for Web3 (USDC/USDT)`;
 
     // Broadcast the message to the main compound group
     await bot.telegram.sendMessage(process.env.GROUP_ID, reminderMessage, { parse_mode: "HTML" });
     
-    console.log("✅ Sent daily formatted reminder to the group.");
+    console.log("✅ Sent daily formatted reminder with late fee warning.");
 
   } catch (err) {
     console.error("❌ Reminder Cron Error:", err);
   }
 });
-
 /* =====================================================
    SERVER BOOT
 ===================================================== */
