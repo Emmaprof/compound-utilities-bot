@@ -968,30 +968,36 @@ app.post("/crypto-webhook", async (req, res) => {
    AUTOMATION: DUNE ANALYTICS DAILY SYNC
 ===================================================== */
 cron.schedule("0 2 * * *", async () => { 
-  // "0 2 * * *" is standard server time for "Run at 2:00 AM every day"
   try {
     const bill = await Bill.findOne({ isActive: true });
     
-    // If there is no active bill, or nobody has paid yet, skip the upload
     if (!bill || bill.payments.length === 0) return;
 
-    // 1. Build the CSV string (Exactly like your /export command)
-    let csvString = "telegramId,fullName,amount,reference,paidAt\n";
+    // 1. Build the CSV string with headers matching your DuneSQL queries EXACTLY
+    let csvString = "telegram_id,full_name,amount_paid_ngn,reference,date_paid\n";
     
     for (const p of bill.payments) {
-      // Remove commas from names so it doesn't break the CSV columns
       const safeName = p.fullName ? p.fullName.replace(/,/g, "") : "Unknown";
-      csvString += `${p.telegramId},${safeName},${p.amount},${p.reference},${p.paidAt.toISOString()}\n`;
+      
+      // Format the date to clean SQL format (YYYY-MM-DD HH:MM:SS) to avoid Dune parsing errors
+      const dateObj = new Date(p.paidAt);
+      const sqlDate = dateObj.toISOString().replace('T', ' ').substring(0, 19);
+      
+      csvString += `${p.telegramId},${safeName},${p.amount},${p.reference},${sqlDate}\n`;
     }
 
-    // 2. Send the CSV directly to your private Dune database
+    // 2. Send the CSV to Dune's new 2026 Upload API
     await axios.post(
-      "https://api.dune.com/api/v1/uploads/decentralizeddev/compound_payments/insert", 
-      csvString,
+      "https://api.dune.com/api/v1/uploads/csv", 
+      {
+        table_name: "compound_payments", // This will create dune.decentralizeddev.dataset_compound_payments
+        data: csvString,
+        description: "Automated daily ledger upload from Node.js"
+      },
       {
         headers: {
           "X-DUNE-API-KEY": process.env.DUNE_API_KEY,
-          "Content-Type": "text/csv"
+          "Content-Type": "application/json" // The API requires the payload itself to be JSON
         }
       }
     );
