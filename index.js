@@ -990,17 +990,17 @@ app.post("/crypto-webhook", async (req, res) => {
 ===================================================== */
 async function syncToDune() {
   try {
-    // Fetch ALL bills, skipping test bills created before March 10, 2026
-    const productionDate = new Date("2026-03-10T00:00:00Z");
-    const allBills = await Bill.find({ createdAt: { $gte: productionDate } });
+    // Fetch ALL bills from the database
+    const allBills = await Bill.find({});
     
-    if (allBills.length === 0) return;
-
-    // Notice the new 'billing_cycle' column
     let csvString = "telegram_id,full_name,amount_paid_ngn,reference,date_paid,billing_cycle\n";
     let paymentCount = 0;
     
     for (const bill of allBills) {
+      // 🔥 THE FIX: Skip the test bills! 
+      // If the split amount was less than 1000 Naira, it ignores it completely.
+      if (bill.splitAmount < 1000) continue; 
+
       const billDate = new Date(bill.createdAt);
       billDate.setMonth(billDate.getMonth() - 1); 
       const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -1016,7 +1016,11 @@ async function syncToDune() {
       }
     }
 
-    if (paymentCount === 0) return;
+    // If no real production payments exist, abort the upload
+    if (paymentCount === 0) {
+      console.log("⚠️ No production payments found yet. Skipping Dune upload.");
+      return;
+    }
 
     await axios.post(
       "https://api.dune.com/api/v1/uploads/csv", 
@@ -1033,7 +1037,7 @@ async function syncToDune() {
       }
     );
     
-    console.log(`✅ Event-Driven Sync: ${paymentCount} payments pushed to Dune instantly.`);
+    console.log(`✅ Event-Driven Sync: ${paymentCount} production payments pushed to Dune instantly.`);
 
   } catch (err) {
     console.error("❌ Dune Real-Time Sync Error:", err.response?.data || err.message);
