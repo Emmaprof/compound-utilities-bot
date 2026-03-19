@@ -1,4 +1,4 @@
-#  CompoundOS AND The Oracle
+#  CompoundOS and The Oracle
 
 An automated, event-driven utility billing engine and Web3 financial transparency protocol built for residential compounds. 
 
